@@ -1,0 +1,4 @@
+numpy
+pydicom>=2.4
+pillow
+openpyxl>=3.1
