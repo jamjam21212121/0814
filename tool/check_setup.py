@@ -70,6 +70,61 @@ def check_paths() -> None:
                      ("엑셀 양식", config.EXCEL_PATH),
                      ("captures 폴더", config.CAPTURE_DIR)]:
         out(f"{ok(p.exists())} {label}: {p}")
+    if config.PROJECT_DIR.is_dir():
+        show_tree(config.PROJECT_DIR)
+        if not (config.SERIES_CSV.exists() and config.EXCEL_PATH.exists()):
+            find_misplaced(config.PROJECT_DIR)
+
+
+def _children(folder: Path) -> list[Path]:
+    try:
+        return sorted(folder.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+    except OSError:
+        return []
+
+
+def show_tree(root: Path, max_depth: int = 3, max_items: int = 15) -> None:
+    """프로젝트 폴더 안 구조 (train_images 속 study 폴더는 개수만 표시)."""
+    out()
+    out("■ 프로젝트 폴더 안 실제 구조")
+
+    def walk(folder: Path, depth: int) -> None:
+        kids = [k for k in _children(folder) if k.name != "__pycache__"]
+        if folder.name.lower() == "train_images":
+            out(f"{'    ' * depth}(study 폴더 {sum(k.is_dir() for k in kids)}개)")
+            return
+        for k in kids[:max_items]:
+            out(f"{'    ' * depth}{k.name}{chr(92) if k.is_dir() else ''}")
+            if k.is_dir() and depth + 1 < max_depth:
+                walk(k, depth + 1)
+        if len(kids) > max_items:
+            out(f"{'    ' * depth}... 외 {len(kids) - max_items}개")
+
+    walk(root, 1)
+
+
+def find_misplaced(root: Path, max_depth: int = 5) -> None:
+    """CSV·엑셀·train_images 가 예상과 다른 곳에 있으면 찾아서 알려 줌."""
+    targets = {config.SERIES_CSV.name, config.COORDS_CSV.name}
+    found = []
+
+    def walk(folder: Path, depth: int) -> None:
+        for k in _children(folder):
+            if k.is_dir():
+                if k.name.lower() == "train_images":
+                    found.append(("train_images 폴더", k))
+                elif depth < max_depth and k.name != "__pycache__":
+                    walk(k, depth + 1)
+            elif k.name in targets or (k.suffix.lower() == ".xlsx" and not k.name.startswith("~$")):
+                found.append(("파일", k))
+
+    walk(root, 1)
+    out()
+    out("■ 프로젝트 폴더 전체에서 찾은 데이터/엑셀 위치")
+    for kind, p in found:
+        out(f"  {kind}: {p}")
+    if not found:
+        out("  CSV, train_images, 엑셀(.xlsx)을 하나도 찾지 못했습니다. 파일을 이 폴더 안으로 옮겨 주세요.")
 
 
 # ── 3. CSV ────────────────────────────────────────────────
