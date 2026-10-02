@@ -55,7 +55,13 @@ def check_python() -> None:
 # ── 2. 폴더/파일 ──────────────────────────────────────────
 def check_paths() -> None:
     section("2. 폴더와 파일")
-    out(f"프로젝트 폴더: {config.PROJECT_DIR}")
+    out(f"{ok(config.PROJECT_DIR.is_dir())} 프로젝트 폴더: {config.PROJECT_DIR}")
+    if not config.PROJECT_DIR.is_dir():
+        out("       → 폴더 이름/위치가 다르면 tool\\config.py 의 PROJECT_DIR 을 고치세요.")
+    inside = config.PROJECT_DIR in config.TOOL_DIR.parents
+    out(f"{'[OK]  ' if inside else '[참고]'} 코드 위치: {config.TOOL_DIR}"
+        + ("" if inside else "  (프로젝트 폴더 밖이지만 결과물은 프로젝트 폴더에 저장됩니다. "
+                             "관리하기 쉽게 연구멘토링\\tool 로 옮기는 것을 권장)"))
     for label, p in [("data 폴더", config.DATA_DIR),
                      ("train_images", config.IMAGES_DIR),
                      ("series CSV", config.SERIES_CSV),
@@ -262,9 +268,12 @@ def main() -> None:
         except Exception as e:
             out(f"[오류] {e!r}")
 
+    if not config.PROJECT_DIR.is_dir():
+        print(f"\n프로젝트 폴더가 없어 보고서를 저장하지 않았습니다: {config.PROJECT_DIR}")
+        return
     report = config.LABELING_DIR / "setup_report.txt"
     try:
-        report.parent.mkdir(parents=True, exist_ok=True)
+        report.parent.mkdir(exist_ok=True)
         report.write_text("\n".join(lines), encoding="utf-8")
         print(f"\n보고서 저장: {report}")
     except Exception as e:

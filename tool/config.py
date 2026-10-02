@@ -6,10 +6,10 @@
 from pathlib import Path
 
 # ── 폴더 ────────────────────────────────────────────────
-# 이 파일은 <프로젝트 폴더>\tool\config.py 에 있다고 가정합니다.
-# 그래서 tool 폴더의 한 단계 위를 프로젝트 폴더로 씁니다.
-# (다른 곳에 두었다면 아래 줄을 Path(r"C:\Users\...\연구멘토링") 처럼 바꾸세요.)
-PROJECT_DIR = Path(__file__).resolve().parent.parent
+# 모든 입력(데이터)과 결과물(엑셀, 캡처, 백업, 보고서)은 이 폴더 안에서만 읽고 씁니다.
+# tool 폴더를 어디에 두고 실행하든 이 경로가 기준입니다.
+PROJECT_DIR = Path(r"C:\Users\kay85\OneDrive\바탕 화면\연구멘토링")
+TOOL_DIR = Path(__file__).resolve().parent   # 코드가 있는 곳 (권장: PROJECT_DIR\tool)
 
 DATA_DIR = PROJECT_DIR / "data"
 IMAGES_DIR = DATA_DIR / "train_images"

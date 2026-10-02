@@ -6,15 +6,24 @@ RSNA 2024 Lumbar Spine 데이터의 Sagittal T2 영상을 보면서 쉬모를 �
 
 ## 폴더 배치
 
+모든 데이터와 결과물은 **`C:\Users\kay85\OneDrive\바탕 화면\연구멘토링`** 안에서만 읽고 씁니다.
+기준 경로는 `config.py`의 `PROJECT_DIR`이고, `tool` 폴더를 어디서 실행하든 이 경로가 기준입니다.
+관리하기 쉽도록 `tool` 폴더도 이 안에 두는 것을 권장합니다.
+
 ```
 연구멘토링\
 ├─ data\                      ← RSNA 데이터 (train_images, CSV 2개)
-├─ labeling\                  ← 엑셀 양식, captures\, backup\(자동 생성)
+├─ labeling\
+│   ├─ LumbarDISC_Schmorl_labeling_v0.1.xlsx   ← 결과 엑셀
+│   ├─ captures\              ← 애매(Uncertain) 병변 캡처 이미지
+│   ├─ backup\                ← 엑셀 수정 전 자동 백업 (자동 생성)
+│   ├─ setup_report.txt       ← ⓪ 점검 보고서
+│   └─ sample_selection_log.txt ← ① 추출 기록 (시드, 모집단, 목록)
 └─ tool\                      ← 이 폴더 (코드)
 ```
 
-`tool` 폴더를 반드시 `연구멘토링` 바로 아래에 두세요. 코드는 `tool`의 한 단계 위 폴더를
-프로젝트 폴더로 인식합니다. 다른 곳에 둬야 하면 `config.py`의 `PROJECT_DIR`을 고치면 됩니다.
+폴더 이름이나 위치가 바뀌면 `config.py`의 `PROJECT_DIR` 한 줄만 고치면 됩니다.
+실행 파일(.bat)은 `__pycache__` 같은 부산물을 만들지 않도록 설정돼 있습니다.
 
 ## 처음 한 번: 준비
 
