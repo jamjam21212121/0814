@@ -13,8 +13,21 @@ TOOL_DIR = Path(__file__).resolve().parent   # 코드가 있는 곳 (권장: PRO
 
 DATA_DIR = PROJECT_DIR / "data"
 IMAGES_DIR = DATA_DIR / "train_images"
-SERIES_CSV = DATA_DIR / "train_series_descriptions.csv"
-COORDS_CSV = DATA_DIR / "train_label_coordinates.csv"
+
+
+def _find_csv(name: str) -> Path:
+    """data\\ 에 없으면 data 의 바로 아래 하위 폴더(예: data\\새 폴더\\)에서 찾습니다."""
+    direct = DATA_DIR / name
+    if direct.exists() or not DATA_DIR.is_dir():
+        return direct
+    for sub in sorted(DATA_DIR.iterdir()):
+        if sub.is_dir() and sub.name != "train_images" and (sub / name).exists():
+            return sub / name
+    return direct
+
+
+SERIES_CSV = _find_csv("train_series_descriptions.csv")
+COORDS_CSV = _find_csv("train_label_coordinates.csv")
 
 LABELING_DIR = PROJECT_DIR / "labeling"
 EXCEL_PATH = LABELING_DIR / "LumbarDISC_Schmorl_labeling_v0.1.xlsx"

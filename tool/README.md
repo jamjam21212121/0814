@@ -12,7 +12,7 @@ RSNA 2024 Lumbar Spine 데이터의 Sagittal T2 영상을 보면서 쉬모를 �
 
 ```
 연구멘토링\
-├─ data\                      ← RSNA 데이터 (train_images, CSV 2개)
+├─ data\                      ← RSNA 데이터 (train_images, CSV 2개 — CSV는 data 바로 아래 하위 폴더에 있어도 찾음)
 ├─ labeling\
 │   ├─ LumbarDISC_Schmorl_labeling_v0.1.xlsx   ← 결과 엑셀
 │   ├─ captures\              ← 애매(Uncertain) 병변 캡처 이미지
