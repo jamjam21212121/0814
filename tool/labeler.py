@@ -172,11 +172,15 @@ class LabelerApp:
                                 highlightthickness=0, cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
 
+        # 슬라이스 줄: 오른쪽 글자·체크를 먼저 붙이고 슬라이더는 마지막에 (창이 좁으면 슬라이더가 줄어듦)
         ttk.Label(row, text="슬라이스").pack(side="left")
+        self.show_levels = tk.BooleanVar(value=True)
+        ttk.Checkbutton(row, text="레벨 표시 (F2)", variable=self.show_levels,
+                        command=self.render).pack(side="right", padx=(10, 0))
+        self.slice_text = tk.StringVar()
+        ttk.Label(row, textvariable=self.slice_text, width=19).pack(side="right")
         self.slice_scale = ttk.Scale(row, from_=0, to=1, orient="horizontal", command=self._on_slice_scale)
         self.slice_scale.pack(side="left", fill="x", expand=True, padx=6)
-        self.slice_text = tk.StringVar()
-        ttk.Label(row, textvariable=self.slice_text, width=28).pack(side="left")
 
         self.bright = tk.DoubleVar(value=0)
         self.contrast = tk.DoubleVar(value=0)
@@ -185,9 +189,6 @@ class LabelerApp:
             ttk.Scale(row2, from_=-100, to=100, orient="horizontal", variable=var, length=140,
                       command=lambda _v: self.render()).pack(side="left", padx=(4, 14))
         ttk.Button(row2, text="밝기/대비 초기화", command=self.reset_window).pack(side="left")
-        self.show_levels = tk.BooleanVar(value=True)
-        ttk.Checkbutton(row2, text="레벨 표시 (F2)", variable=self.show_levels,
-                        command=self.render).pack(side="left", padx=(12, 0))
 
         c = self.canvas
         c.bind("<Configure>", lambda e: self.render())
@@ -456,7 +457,7 @@ class LabelerApp:
             self.info_var.set("영상 없음" if self.series is not None else "")
             return
         n = len(self.series)
-        self.slice_text.set(f"{self.slice_idx + 1} / {n}  (instance_number {self.current_instance()})")
+        self.slice_text.set(f"{self.slice_idx + 1} / {n}  instance {self.current_instance()}")
         gap = "   ※ instance 번호 일부 누락 (다운로드 미완료 의심)" if self.series.has_gaps() else ""
         series_id = self.patients[self.current].t2_series if self.current is not None else ""
         if self.coords:
