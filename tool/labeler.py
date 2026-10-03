@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 LumbarDISC 쉬모를 결절 라벨링 프로그램
-  ② 이미지 창과 슬라이스 넘기기  ← 지금 단계
-  (③ 레벨 표시, ④ 분류 입력·엑셀 기록, ⑤ 이어하기, ⑥ MicroDicom 열기는 단계별로 추가)
+  ② 이미지 창과 슬라이스 넘기기
+  ③ 레벨 위치 표시 (train_label_coordinates.csv)  ← 지금 단계
+  (④ 분류 입력·엑셀 기록, ⑤ 이어하기, ⑥ MicroDicom 열기는 단계별로 추가)
 
 실행: run_labeler.bat 더블클릭
 
@@ -32,6 +33,9 @@ def log(text: str) -> None:
     print(text, flush=True)
 
 
+LEVEL_COLOR = "#7CFC00"        # 라벨 좌표를 찍은 슬라이스: 밝은 연두
+LEVEL_COLOR_DIM = "#5f9e5f"    # 다른 슬라이스: 흐린 초록 (위치 참고용)
+
 STATUS_COLORS = {config.STATUS_DONE: "#d6f0d6", config.STATUS_UNCERTAIN: "#ffe2b0"}
 HELP_TEXT = """조작법
 
@@ -54,12 +58,19 @@ HELP_TEXT = """조작법
   상태줄에 원본 픽셀 x, y
   (클릭하면 그 위치 고정 표시)
 
+■ 레벨 표시 (L1/L2 ~ L5/S1)
+  F2 키, [레벨 표시] 체크
+  · 진한 연두 = 좌표를 찍은
+    슬라이스
+  · 흐린 초록 = 다른 슬라이스
+    (위치 참고용)
+  Home 키 = 좌표 슬라이스로
+
 ■ 이 칸 열기/닫기
   F1 키, [조작법 보기] 버튼
 
-※ 레벨 표시(③), 분류 입력
-   N/S/A(④)는 다음 단계에서
-   추가됩니다."""
+※ 분류 입력 N/S/A(④)는
+   다음 단계에서 추가됩니다."""
 
 
 class LabelerApp:
@@ -72,6 +83,7 @@ class LabelerApp:
         self.level0, self.width0 = 0.0, 1.0  # 시리즈 기본 밝기/대비
         self.view = None                     # 화면 배치 (원본 픽셀 ↔ 화면 좌표 변환용)
         self.message: str | None = None      # 영상 대신 보여 줄 안내/오류 문구
+        self.coords: list[dict] = []         # 현재 환자의 레벨 좌표 (train_label_coordinates.csv)
         self._photo = None
         self._drag = None
         self._syncing = False
@@ -173,6 +185,9 @@ class LabelerApp:
             ttk.Scale(row2, from_=-100, to=100, orient="horizontal", variable=var, length=140,
                       command=lambda _v: self.render()).pack(side="left", padx=(4, 14))
         ttk.Button(row2, text="밝기/대비 초기화", command=self.reset_window).pack(side="left")
+        self.show_levels = tk.BooleanVar(value=True)
+        ttk.Checkbutton(row2, text="레벨 표시 (F2)", variable=self.show_levels,
+                        command=self.render).pack(side="left", padx=(12, 0))
 
         c = self.canvas
         c.bind("<Configure>", lambda e: self.render())
@@ -182,6 +197,14 @@ class LabelerApp:
         c.bind("<ButtonPress-3>", self._on_drag_start)
         c.bind("<B3-Motion>", self._on_drag)
         c.bind("<ButtonRelease-3>", lambda e: setattr(self, "_drag", None))
+
+    @property
+    def _level_font(self):
+        if not hasattr(self, "_level_font_obj"):
+            f = tkfont.nametofont("TkDefaultFont").copy()
+            f.configure(weight="bold")
+            self._level_font_obj = f
+        return self._level_font_obj
 
     def _bold_font(self):
         f = tkfont.nametofont("TkDefaultFont").copy()
@@ -196,7 +219,8 @@ class LabelerApp:
         tag = "LabelerKeys"
         actions = {"<Up>": lambda: self.step_slice(-1), "<Down>": lambda: self.step_slice(1),
                    "<Left>": lambda: self.step_patient(-1), "<Right>": lambda: self.step_patient(1),
-                   "<F1>": self.toggle_help}
+                   "<F1>": self.toggle_help, "<F2>": self.toggle_levels,
+                   "<Home>": self.go_to_label_slice}
         for seq, fn in actions.items():
             self.root.bind_class(tag, seq, lambda e, f=fn: (f(), "break")[1])
         self.root.bind_class(tag, "<MouseWheel>", self._on_wheel)          # Windows
@@ -239,6 +263,7 @@ class LabelerApp:
         self.title_var.set(f"[{index + 1}/{len(self.patients)}] study {p.study_id}")
 
         self.series = None                       # 이전 환자 영상은 메모리에서 해제
+        self.coords = []
         self.bright.set(0)
         self.contrast.set(0)
         folder = dataset.series_dir(p.study_id, p.t2_series)
@@ -256,7 +281,14 @@ class LabelerApp:
             log("  → " + self.message.replace("\n", " "))
             self.render()
             return
-        self.slice_idx = len(series) // 2        # 가운데 슬라이스부터
+        try:
+            self.coords = dataset.read_coordinates(p.study_id, p.t2_series)
+        except Exception:
+            self.coords = []
+            log("  → 좌표 CSV 읽기 실패\n" + traceback.format_exc())
+        label_idx = self.label_slice_index()
+        # 레벨 좌표를 찍은 슬라이스부터, 없으면 가운데 슬라이스부터
+        self.slice_idx = label_idx if label_idx is not None else len(series) // 2
         try:
             self.level0, self.width0 = imaging.auto_window(series.get(self.slice_idx))
         except Exception as e:
@@ -265,12 +297,56 @@ class LabelerApp:
             self.render()
             return
         self.message = None
-        log(f"  → {len(series)}장, 가운데 슬라이스 읽기 완료 ({time.time() - t0:.1f}초)")
+        log(f"  → {len(series)}장, 레벨 좌표 {len(self.coords)}개, 첫 화면 instance "
+            f"{series.instances[self.slice_idx]} ({time.time() - t0:.1f}초)")
         self._syncing = True
         self.slice_scale.configure(to=max(len(series) - 1, 1))
         self.slice_scale.set(self.slice_idx)
         self._syncing = False
         self.render()
+
+    # ── 레벨 좌표 ─────────────────────────────────────────
+    def label_slice_index(self) -> int | None:
+        """레벨 좌표가 가장 많이 찍힌 instance 의 슬라이스 번호 (없으면 None)."""
+        if not self.coords or not self.series:
+            return None
+        counts: dict[int, int] = {}
+        for c in self.coords:
+            counts[c["instance"]] = counts.get(c["instance"], 0) + 1
+        for inst in sorted(counts, key=lambda k: -counts[k]):
+            idx = self.series.index_of_instance(inst)
+            if idx is not None:
+                return idx
+        return None
+
+    def go_to_label_slice(self) -> None:
+        idx = self.label_slice_index()
+        if idx is not None:
+            self.step_slice(idx - self.slice_idx)
+
+    def toggle_levels(self) -> None:
+        self.show_levels.set(not self.show_levels.get())
+        self.render()
+
+    def draw_levels(self) -> None:
+        """L1/L2 ~ L5/S1 위치에 표시. 좌표를 찍은 슬라이스는 진하게, 다른 슬라이스는 흐리게."""
+        c = self.canvas
+        inst = self.current_instance()
+        for p in self.coords:
+            if not (0 <= p["x"] < self.view["w"] and 0 <= p["y"] < self.view["h"]):
+                continue
+            cx, cy = self.pixel_to_canvas(p["x"], p["y"])
+            same = p["instance"] == inst
+            color = LEVEL_COLOR if same else LEVEL_COLOR_DIM
+            r = 5 if same else 4
+            c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=2,
+                          fill=color if same else "", tags="level")
+            text = p["level"] if same else f'{p["level"]} (inst {p["instance"]})'
+            for dx, dy in ((1, 1), (-1, -1), (1, -1), (-1, 1)):       # 글자 테두리(검정)
+                c.create_text(cx - 10 + dx, cy + dy, text=text, anchor="e", fill="black",
+                              font=self._level_font, tags="level")
+            c.create_text(cx - 10, cy, text=text, anchor="e", fill=color,
+                          font=self._level_font, tags="level")
 
     # ── 슬라이스 ──────────────────────────────────────────
     def step_slice(self, delta: int) -> None:
@@ -350,6 +426,8 @@ class LabelerApp:
         self._photo = ImageTk.PhotoImage(img)
         c.create_image(ox, oy, anchor="nw", image=self._photo, tags="image")
         self.view = {"ox": ox, "oy": oy, "sx": dw / w, "sy": dh / h, "w": w, "h": h}
+        if self.show_levels.get():
+            self.draw_levels()
         self._update_info()
 
     def pixel_to_canvas(self, x: float, y: float) -> tuple[float, float]:
@@ -381,8 +459,13 @@ class LabelerApp:
         self.slice_text.set(f"{self.slice_idx + 1} / {n}  (instance_number {self.current_instance()})")
         gap = "   ※ instance 번호 일부 누락 (다운로드 미완료 의심)" if self.series.has_gaps() else ""
         series_id = self.patients[self.current].t2_series if self.current is not None else ""
+        if self.coords:
+            insts = sorted({c["instance"] for c in self.coords})
+            levels = f"   레벨 좌표 {len(self.coords)}개 (instance {', '.join(map(str, insts))})"
+        else:
+            levels = "   레벨 좌표 없음"
         self.info_var.set(f"series {series_id}   슬라이스 {self.slice_idx + 1}/{n}   "
-                          f"밝기 {self.bright.get():+.0f}   대비 {self.contrast.get():+.0f}{gap}")
+                          f"밝기 {self.bright.get():+.0f}   대비 {self.contrast.get():+.0f}{levels}{gap}")
 
     def _pixel_text(self, cx, cy) -> str | None:
         pos = self.canvas_to_pixel(cx, cy)

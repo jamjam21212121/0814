@@ -84,3 +84,27 @@ def pick_series(study_id: str, description: str,
 
     best = min(candidates, key=rank)
     return best, bool(list_dicom_files(series_dir(study_id, best)))
+
+
+def read_coordinates(study_id, series_id, path: Path = config.COORDS_CSV) -> list[dict]:
+    """
+    train_label_coordinates.csv 에서 이 study·series 의 좌표만 골라 읽습니다.
+    (메모리 절약: 전체를 들고 있지 않고 환자를 바꿀 때마다 필요한 줄만 읽음)
+    반환: [{"instance": 8, "condition": "...", "level": "L1/L2", "x": 312.5, "y": 201.3}, ...]
+    """
+    study, series = _id(study_id), _id(series_id)
+    result = []
+    if not path.exists():
+        return result
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        for row in csv.DictReader(f):
+            if _id(row["study_id"]) != study or _id(row["series_id"]) != series:
+                continue
+            try:
+                result.append({"instance": int(float(row["instance_number"])),
+                               "condition": row["condition"].strip(),
+                               "level": row["level"].strip().replace("_", "/").upper(),
+                               "x": float(row["x"]), "y": float(row["y"])})
+            except (KeyError, ValueError):
+                continue
+    return sorted(result, key=lambda c: c["level"])
