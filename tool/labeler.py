@@ -54,6 +54,9 @@ HELP_TEXT = """조작법
   상태줄에 원본 픽셀 x, y
   (클릭하면 그 위치 고정 표시)
 
+■ 이 칸 열기/닫기
+  F1 키, [조작법 보기] 버튼
+
 ※ 레벨 표시(③), 분류 입력
    N/S/A(④)는 다음 단계에서
    추가됩니다."""
@@ -121,13 +124,12 @@ class LabelerApp:
         ttk.Button(nav, text="◀ 이전 환자", command=lambda: self.step_patient(-1)).pack(side="left", expand=True, fill="x")
         ttk.Button(nav, text="다음 환자 ▶", command=lambda: self.step_patient(1)).pack(side="left", expand=True, fill="x")
 
-        # 오른쪽: 조작법 (④단계에서 분류 입력 칸이 여기에 들어갑니다)
-        right = ttk.Frame(main, padding=(4, 6, 8, 6))
-        right.pack(side="right", fill="y")
-        ttk.Label(right, text=HELP_TEXT, justify="left").pack(anchor="nw")
+        # 오른쪽: 조작법 — 기본은 숨김, [조작법 보기] 버튼이나 F1 로 열고 닫음
+        self.help_frame = ttk.Frame(main, padding=(4, 6, 8, 6))
+        ttk.Label(self.help_frame, text=HELP_TEXT, justify="left").pack(anchor="nw")
 
         # 가운데: 이미지
-        center = ttk.Frame(main, padding=6)
+        center = self.center_frame = ttk.Frame(main, padding=6)
         center.pack(side="left", fill="both", expand=True)
         self.title_var = tk.StringVar()
         ttk.Label(center, textvariable=self.title_var, font=self._bold_font()).pack(anchor="w", pady=(0, 4))
@@ -152,6 +154,8 @@ class LabelerApp:
             ttk.Scale(row2, from_=-100, to=100, orient="horizontal", variable=var, length=170,
                       command=lambda _v: self.render()).pack(side="left", padx=(4, 14))
         ttk.Button(row2, text="밝기/대비 초기화", command=self.reset_window).pack(side="left")
+        self.help_button = ttk.Button(row2, text="조작법 보기 (F1)", command=self.toggle_help)
+        self.help_button.pack(side="right")
 
         c = self.canvas
         c.bind("<Configure>", lambda e: self.render())
@@ -174,7 +178,8 @@ class LabelerApp:
         """
         tag = "LabelerKeys"
         actions = {"<Up>": lambda: self.step_slice(-1), "<Down>": lambda: self.step_slice(1),
-                   "<Left>": lambda: self.step_patient(-1), "<Right>": lambda: self.step_patient(1)}
+                   "<Left>": lambda: self.step_patient(-1), "<Right>": lambda: self.step_patient(1),
+                   "<F1>": self.toggle_help}
         for seq, fn in actions.items():
             self.root.bind_class(tag, seq, lambda e, f=fn: (f(), "break")[1])
         self.root.bind_class(tag, "<MouseWheel>", self._on_wheel)          # Windows
@@ -186,6 +191,14 @@ class LabelerApp:
             for child in w.winfo_children():
                 add(child)
         add(self.root)
+
+    def toggle_help(self) -> None:
+        if self.help_frame.winfo_ismapped():
+            self.help_frame.pack_forget()
+            self.help_button.configure(text="조작법 보기 (F1)")
+        else:
+            self.help_frame.pack(side="right", fill="y", before=self.center_frame)
+            self.help_button.configure(text="조작법 닫기 (F1)")
 
     # ── 환자 ──────────────────────────────────────────────
     def _on_tree_select(self, _event=None) -> None:
