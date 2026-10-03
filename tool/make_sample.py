@@ -30,7 +30,11 @@ def fail(msg: str) -> None:
 def build_sample():
     for p in (config.SERIES_CSV, config.COORDS_CSV, config.IMAGES_DIR, config.EXCEL_PATH):
         if not p.exists():
-            fail(f"파일/폴더가 없습니다: {p}")
+            hint = ""
+            if p.suffix == ".csv":
+                hint = ("\n        → CSV 파일을 data 폴더 바로 아래나 그 하위 폴더(예: data\\새 폴더\\)에 두세요."
+                        "\n          step0_check.bat 보고서의 '2. 폴더와 파일'에서 실제 위치를 확인할 수 있습니다.")
+            fail(f"파일/폴더가 없습니다: {p}{hint}")
 
     series_map = dataset.read_series_descriptions()
     labeled = dataset.studies_with_coordinates()
@@ -174,7 +178,7 @@ def write_log(sample, n_eligible: int, skipped: list[str]) -> None:
 
 
 def main() -> None:
-    print(f"① 무작위 {config.SAMPLE_SIZE}명 추출 (시드 {config.RANDOM_SEED})\n")
+    print(f"① 무작위 {config.SAMPLE_SIZE}명 추출 (시드 {config.RANDOM_SEED})   [코드 버전 {config.TOOL_VERSION}]\n")
     sample, n_eligible, skipped = build_sample()
     no_t1 = [s[0] for s in sample if not s[3]]
     print(f"\n추출 결과 {len(sample)}명 — 처음 10명:")

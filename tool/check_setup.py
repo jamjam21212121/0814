@@ -307,6 +307,7 @@ def check_microdicom() -> None:
 
 def main() -> None:
     out("LumbarDISC 쉬모를 결절 라벨링 도구 — 준비 상태 점검")
+    out(f"코드 버전: {config.TOOL_VERSION}")
     for step in (check_python, check_paths, check_csvs):
         try:
             step()
