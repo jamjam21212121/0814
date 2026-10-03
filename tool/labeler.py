@@ -102,11 +102,28 @@ class LabelerApp:
         left = ttk.Frame(main, padding=6)
         left.pack(side="left", fill="y")
         ttk.Label(left, text=f"환자 목록 ({len(self.patients)}명)").pack(anchor="w")
+        # 이전/다음 버튼을 먼저 아래에 붙여야 창이 작아도 버튼이 가려지지 않습니다.
+        nav = ttk.Frame(left)
+        nav.pack(side="bottom", fill="x", pady=(6, 0))
+        ttk.Button(nav, text="◀ 이전 환자", command=lambda: self.step_patient(-1)).pack(side="left", expand=True, fill="x")
+        ttk.Button(nav, text="다음 환자 ▶", command=lambda: self.step_patient(1)).pack(side="left", expand=True, fill="x")
         box = ttk.Frame(left)
         box.pack(fill="y", expand=True)
+
+        # 행 높이와 열 너비를 실제 글꼴 크기에 맞춤 (Windows 배율 125~150%에서 글자 잘림 방지)
+        font = tkfont.nametofont("TkDefaultFont")
+        line = font.metrics("linespace")
+        style = ttk.Style(self.root)
+        style.configure("Treeview", rowheight=line + max(6, line // 2))
+        style.configure("Treeview.Heading", padding=(4, max(3, line // 5)))
+        pad = font.measure("00")
+        widths = {"no": max(font.measure("번호"), font.measure("100")) + pad,
+                  "study": font.measure("0000000000") + pad,
+                  "status": font.measure("애매포함") + pad}
         self.tree = ttk.Treeview(box, columns=("no", "study", "status"), show="headings",
-                                 selectmode="browse", height=25)
-        for col, text, width in [("no", "번호", 46), ("study", "study_id", 112), ("status", "상태", 70)]:
+                                 selectmode="browse", height=10)
+        for col, text in [("no", "번호"), ("study", "study_id"), ("status", "상태")]:
+            width = widths[col]
             self.tree.heading(col, text=text)
             self.tree.column(col, width=width, anchor="center", stretch=False)
         for status, color in STATUS_COLORS.items():
@@ -119,10 +136,6 @@ class LabelerApp:
         self.tree.pack(side="left", fill="y")
         sb.pack(side="left", fill="y")
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
-        nav = ttk.Frame(left)
-        nav.pack(fill="x", pady=(6, 0))
-        ttk.Button(nav, text="◀ 이전 환자", command=lambda: self.step_patient(-1)).pack(side="left", expand=True, fill="x")
-        ttk.Button(nav, text="다음 환자 ▶", command=lambda: self.step_patient(1)).pack(side="left", expand=True, fill="x")
 
         # 오른쪽: 조작법 — 기본은 숨김, [조작법 보기] 버튼이나 F1 로 열고 닫음
         self.help_frame = ttk.Frame(main, padding=(4, 6, 8, 6))
@@ -131,31 +144,35 @@ class LabelerApp:
         # 가운데: 이미지
         center = self.center_frame = ttk.Frame(main, padding=6)
         center.pack(side="left", fill="both", expand=True)
+        # 제목 줄: 오른쪽 [조작법] 버튼을 먼저 붙여서 창이 좁아도 버튼은 보이게 (제목이 대신 잘림)
+        title_row = ttk.Frame(center)
+        title_row.pack(side="top", fill="x", pady=(0, 4))
+        self.help_button = ttk.Button(title_row, text="조작법 보기 (F1)", command=self.toggle_help)
+        self.help_button.pack(side="right")
         self.title_var = tk.StringVar()
-        ttk.Label(center, textvariable=self.title_var, font=self._bold_font()).pack(anchor="w", pady=(0, 4))
-        self.canvas = tk.Canvas(center, bg="black", width=560, height=560,
+        ttk.Label(title_row, textvariable=self.title_var, font=self._bold_font()).pack(side="left")
+        # 슬라이더·버튼 줄을 먼저 아래에 붙이고, 남는 공간을 영상이 차지합니다.
+        row2 = ttk.Frame(center)
+        row2.pack(side="bottom", fill="x", pady=(4, 0))
+        row = ttk.Frame(center)
+        row.pack(side="bottom", fill="x", pady=(6, 0))
+        self.canvas = tk.Canvas(center, bg="black", width=480, height=480,
                                 highlightthickness=0, cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
 
-        row = ttk.Frame(center)
-        row.pack(fill="x", pady=(6, 0))
         ttk.Label(row, text="슬라이스").pack(side="left")
         self.slice_scale = ttk.Scale(row, from_=0, to=1, orient="horizontal", command=self._on_slice_scale)
         self.slice_scale.pack(side="left", fill="x", expand=True, padx=6)
         self.slice_text = tk.StringVar()
         ttk.Label(row, textvariable=self.slice_text, width=28).pack(side="left")
 
-        row2 = ttk.Frame(center)
-        row2.pack(fill="x", pady=(4, 0))
         self.bright = tk.DoubleVar(value=0)
         self.contrast = tk.DoubleVar(value=0)
         for text, var in [("밝기", self.bright), ("대비", self.contrast)]:
             ttk.Label(row2, text=text).pack(side="left")
-            ttk.Scale(row2, from_=-100, to=100, orient="horizontal", variable=var, length=170,
+            ttk.Scale(row2, from_=-100, to=100, orient="horizontal", variable=var, length=140,
                       command=lambda _v: self.render()).pack(side="left", padx=(4, 14))
         ttk.Button(row2, text="밝기/대비 초기화", command=self.reset_window).pack(side="left")
-        self.help_button = ttk.Button(row2, text="조작법 보기 (F1)", command=self.toggle_help)
-        self.help_button.pack(side="right")
 
         c = self.canvas
         c.bind("<Configure>", lambda e: self.render())
@@ -219,8 +236,7 @@ class LabelerApp:
         p = self.patients[index]
         self.tree.selection_set(str(index))
         self.tree.see(str(index))
-        self.title_var.set(f"[{index + 1}/{len(self.patients)}] study {p.study_id}  —  "
-                           f"Sagittal T2 (series {p.t2_series})")
+        self.title_var.set(f"[{index + 1}/{len(self.patients)}] study {p.study_id}")
 
         self.series = None                       # 이전 환자 영상은 메모리에서 해제
         self.bright.set(0)
@@ -363,11 +379,10 @@ class LabelerApp:
             return
         n = len(self.series)
         self.slice_text.set(f"{self.slice_idx + 1} / {n}  (instance_number {self.current_instance()})")
-        level, width = imaging.adjusted_window(self.level0, self.width0,
-                                               self.bright.get(), self.contrast.get())
         gap = "   ※ instance 번호 일부 누락 (다운로드 미완료 의심)" if self.series.has_gaps() else ""
-        self.info_var.set(f"슬라이스 {self.slice_idx + 1}/{n}   밝기 {self.bright.get():+.0f}  "
-                          f"대비 {self.contrast.get():+.0f}   (윈도우 L {level:.0f} / W {width:.0f}){gap}")
+        series_id = self.patients[self.current].t2_series if self.current is not None else ""
+        self.info_var.set(f"series {series_id}   슬라이스 {self.slice_idx + 1}/{n}   "
+                          f"밝기 {self.bright.get():+.0f}   대비 {self.contrast.get():+.0f}{gap}")
 
     def _pixel_text(self, cx, cy) -> str | None:
         pos = self.canvas_to_pixel(cx, cy)
