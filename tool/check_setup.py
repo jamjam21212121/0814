@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
+r"""
 ⓪ 준비 상태 점검
 - 폴더/CSV/DICOM/엑셀 양식/MicroDicom 설치 위치를 확인해서 보고서를 만듭니다.
 - 아무 파일도 수정하지 않습니다(읽기만 함). 보고서만 labeling\setup_report.txt 로 저장.

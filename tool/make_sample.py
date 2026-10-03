@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
+r"""
 ① 무작위 100명 추출 → 엑셀 sample_list 시트에 기록
 
 대상(모집단): train_images 에 Sagittal T2/STIR 시리즈가 실제로 다운로드된 study
@@ -19,6 +19,7 @@ from datetime import datetime
 import config
 import dataset
 import excel_io
+import workbook
 
 
 def fail(msg: str) -> None:
@@ -61,23 +62,6 @@ def build_sample():
 
 
 # ── 2) 엑셀 sample_list 열 찾기 ───────────────────────────
-def map_columns(cols: list[dict]) -> dict[str, dict]:
-    found = {}
-    for c in cols:
-        n = c["norm"]
-        if n == "studyid":
-            found.setdefault("study_id", c)
-        elif "t2" in n and "axial" not in n and ("series" in n or "sag" in n):
-            found.setdefault("t2", c)
-        elif "t1" in n and ("series" in n or "sag" in n):
-            found.setdefault("t1", c)
-        elif n == "status":
-            found.setdefault("status", c)
-        elif n in {"no", "order", "seq", "index", "sampleno", "sampleorder", "순번", "번호"}:
-            found.setdefault("order", c)
-    return found
-
-
 def as_number(s: str):
     return int(s) if s.isdigit() else s
 
@@ -89,7 +73,7 @@ def write_excel(sample, n_eligible: int) -> None:
     wb, warns = excel_io.load()
     for w in warns:
         print(f"[openpyxl 경고] {w}")
-    ws = next((s for s in wb.worksheets if excel_io.norm(s.title) == "samplelist"), None)
+    ws = workbook.sample_sheet(wb)
     if ws is None:
         fail(f"sample_list 시트를 찾지 못했습니다. 시트 목록: {wb.sheetnames}")
 
@@ -98,7 +82,7 @@ def write_excel(sample, n_eligible: int) -> None:
         fail("sample_list 시트에서 'study_id' 머리글을 찾지 못했습니다.")
     theme = excel_io.theme_colors(wb)
     cols = excel_io.header_columns(ws, hr, theme)
-    mapping = map_columns(cols)
+    mapping = workbook.map_sample_columns(cols)
 
     print(f"\nsample_list 머리글(행 {hr}):")
     for c in cols:
