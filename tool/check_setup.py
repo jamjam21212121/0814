@@ -225,6 +225,59 @@ def check_dicom(sample_dir: str | None) -> None:
         out(f"[문제] DICOM 읽기 실패: {e!r}")
 
 
+# ── 5-2. 라벨링 프로그램 영상 시험 ─────────────────────────
+# OneDrive '온라인 전용' 파일 표시 (이 PC에 실제 내용이 없고, 열 때 내려받음)
+_ONLINE_ONLY = 0x1000 | 0x40000 | 0x400000   # OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS
+
+
+def check_viewer_image() -> None:
+    import os
+    import time
+
+    section("5-2. 라벨링 프로그램 영상 시험 (sample_list 1번 환자)")
+    try:
+        import dataset
+        import imaging
+        import workbook
+
+        patients = workbook.read_sample_list()
+        if not patients:
+            out("sample_list 가 비어 있어 건너뜁니다.")
+            return
+        p = patients[0]
+        folder = dataset.series_dir(p.study_id, p.t2_series)
+        out(f"환자: study {p.study_id}, Sagittal T2 series {p.t2_series}")
+        out(f"폴더: {folder}  (존재={folder.is_dir()})")
+        series = imaging.SeriesData(folder)
+        sizes, online = [], 0
+        for f in series.files:
+            st = os.stat(f)
+            sizes.append(st.st_size)
+            online += bool(getattr(st, "st_file_attributes", 0) & _ONLINE_ONLY)
+        out(f"DICOM 파일 {len(series)}개, instance {series.instances[:3]}...{series.instances[-3:]}"
+            if len(series) else "DICOM 파일 0개")
+        if not len(series):
+            return
+        out(f"파일 크기: 최소 {min(sizes):,} / 최대 {max(sizes):,} bytes, 0바이트 파일 {sizes.count(0)}개")
+        out(f"OneDrive 온라인 전용(이 PC에 없음) 파일: {online}개 / {len(series)}개")
+        out(f"instance 번호 누락: {'있음' if series.has_gaps() else '없음'}")
+
+        mid = len(series) // 2
+        print("  가운데 슬라이스 읽는 중... (OneDrive 에서 내려받는 중이면 오래 걸릴 수 있음)", flush=True)
+        t0 = time.time()
+        arr = series.get(mid)
+        out(f"읽기 [OK] {time.time() - t0:.1f}초, 크기 {arr.shape}, 값 범위 {arr.min():.0f}~{arr.max():.0f}")
+        level, width = imaging.auto_window(arr)
+        out(f"기본 밝기/대비: level {level:.0f}, width {width:.0f}")
+        png = config.LABELING_DIR / "viewer_test.png"
+        imaging.to_display(arr, level, width).save(png)
+        out(f"그림 저장: {png}  ← 이 파일을 열어 척추 영상이 보이는지 확인")
+    except Exception as e:
+        import traceback
+        out(f"[문제] {e!r}")
+        out(traceback.format_exc())
+
+
 # ── 6. 엑셀 양식 ──────────────────────────────────────────
 def check_excel() -> None:
     section("6. 엑셀 양식")
@@ -318,7 +371,7 @@ def main() -> None:
     except Exception as e:
         out(f"[오류] check_downloads: {e!r}")
         sample = None
-    for step in (lambda: check_dicom(sample), check_excel, check_microdicom):
+    for step in (lambda: check_dicom(sample), check_viewer_image, check_excel, check_microdicom):
         try:
             step()
         except Exception as e:

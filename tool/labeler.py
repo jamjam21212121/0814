@@ -14,7 +14,9 @@ LumbarDISC 쉬모를 결절 라벨링 프로그램
 from __future__ import annotations
 
 import sys
+import time
 import tkinter as tk
+import traceback
 import tkinter.font as tkfont
 from tkinter import messagebox, ttk
 
@@ -24,6 +26,11 @@ import config
 import dataset
 import imaging
 import workbook
+
+def log(text: str) -> None:
+    """검은 창(콘솔)에 진행 상황 표시."""
+    print(text, flush=True)
+
 
 STATUS_COLORS = {config.STATUS_DONE: "#d6f0d6", config.STATUS_UNCERTAIN: "#ffe2b0"}
 HELP_TEXT = """조작법
@@ -61,6 +68,7 @@ class LabelerApp:
         self.slice_idx = 0
         self.level0, self.width0 = 0.0, 1.0  # 시리즈 기본 밝기/대비
         self.view = None                     # 화면 배치 (원본 픽셀 ↔ 화면 좌표 변환용)
+        self.message: str | None = None      # 영상 대신 보여 줄 안내/오류 문구
         self._photo = None
         self._drag = None
         self._syncing = False
@@ -202,22 +210,33 @@ class LabelerApp:
                            f"Sagittal T2 (series {p.t2_series})")
 
         self.series = None                       # 이전 환자 영상은 메모리에서 해제
-        self.info_var.set("영상 불러오는 중...")
-        self.root.update_idletasks()
-        series = imaging.SeriesData(dataset.series_dir(p.study_id, p.t2_series))
-        self.series = series
         self.bright.set(0)
         self.contrast.set(0)
+        folder = dataset.series_dir(p.study_id, p.t2_series)
+        log(f"[환자 {index + 1}] study {p.study_id} 영상 읽는 중: {folder}")
+        self.message = "영상 불러오는 중...\n(OneDrive 온라인 전용 파일이면 처음엔 오래 걸릴 수 있습니다)"
+        self.render()
+        self.root.update_idletasks()
+
+        t0 = time.time()
+        series = imaging.SeriesData(folder)
+        self.series = series
         if not len(series):
             self.slice_idx = 0
-            self.render(message=f"Sagittal T2 영상 파일이 없습니다.\n{series.folder}")
+            self.message = f"Sagittal T2 영상 파일이 없습니다.\n{folder}"
+            log("  → " + self.message.replace("\n", " "))
+            self.render()
             return
         self.slice_idx = len(series) // 2        # 가운데 슬라이스부터
         try:
             self.level0, self.width0 = imaging.auto_window(series.get(self.slice_idx))
         except Exception as e:
-            self.render(message=f"DICOM을 읽지 못했습니다.\n{e}")
+            self.message = f"DICOM을 읽지 못했습니다.\n{series.files[self.slice_idx]}\n\n{e!r}"
+            log("  → DICOM 읽기 실패\n" + traceback.format_exc())
+            self.render()
             return
+        self.message = None
+        log(f"  → {len(series)}장, 가운데 슬라이스 읽기 완료 ({time.time() - t0:.1f}초)")
         self._syncing = True
         self.slice_scale.configure(to=max(len(series) - 1, 1))
         self.slice_scale.set(self.slice_idx)
@@ -271,20 +290,24 @@ class LabelerApp:
         self.render()
 
     # ── 그리기와 좌표 변환 ────────────────────────────────
-    def render(self, message: str | None = None) -> None:
+    def render(self) -> None:
         c = self.canvas
+        cw, ch = c.winfo_width(), c.winfo_height()
+        if cw < 50 or ch < 50:                   # 창이 아직 배치되기 전이면 잠시 뒤 다시
+            self.root.after(100, self.render)
+            return
         c.delete("all")
         self.view = None
-        cw, ch = max(c.winfo_width(), 10), max(c.winfo_height(), 10)
+        arr, message = None, self.message
         if message is None and self.series is not None and len(self.series):
             try:
                 arr = self.series.get(self.slice_idx)
             except Exception as e:
-                arr, message = None, f"DICOM을 읽지 못했습니다.\n{self.series.files[self.slice_idx]}\n{e}"
-        else:
-            arr = None
+                message = f"DICOM을 읽지 못했습니다.\n{self.series.files[self.slice_idx]}\n\n{e!r}"
+                log(traceback.format_exc())
         if arr is None:
-            c.create_text(cw / 2, ch / 2, text=message or "", fill="white", justify="center")
+            c.create_text(cw / 2, ch / 2, text=message or "", fill="white", justify="center",
+                          width=cw - 40)
             self._update_info()
             return
 
@@ -321,9 +344,9 @@ class LabelerApp:
         return self.series.instances[self.slice_idx]
 
     def _update_info(self) -> None:
-        if not self.series or not len(self.series):
+        if not self.series or not len(self.series) or self.message:
             self.slice_text.set("")
-            self.info_var.set("영상 없음")
+            self.info_var.set("영상 없음" if self.series is not None else "")
             return
         n = len(self.series)
         self.slice_text.set(f"{self.slice_idx + 1} / {n}  (instance_number {self.current_instance()})")
@@ -335,7 +358,7 @@ class LabelerApp:
 
     def _pixel_text(self, cx, cy) -> str | None:
         pos = self.canvas_to_pixel(cx, cy)
-        if pos is None:
+        if pos is None or self.message:
             return None
         x, y = pos
         value = self.series.get(self.slice_idx)[int(round(y)), int(round(x))]
@@ -372,12 +395,23 @@ def main() -> None:
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception:
             pass
+    log(f"LumbarDISC 라벨링 프로그램 시작 (코드 버전 {config.TOOL_VERSION})")
+    log("이 검은 창을 닫으면 프로그램도 꺼집니다. 오류가 나면 이 창의 글자를 복사해 알려 주세요.")
     root = tk.Tk()
     _setup_fonts()
+
+    def on_error(exc, val, tb):
+        text = "".join(traceback.format_exception(exc, val, tb))
+        log("[오류]\n" + text)
+        messagebox.showerror("오류", f"{val!r}\n\n자세한 내용은 검은 창을 확인하세요.")
+    root.report_callback_exception = on_error
+
+    log(f"엑셀 읽는 중: {config.EXCEL_PATH}")
     try:
         patients = workbook.read_sample_list()
     except Exception as e:
         root.withdraw()
+        log("[오류] 엑셀 읽기 실패\n" + traceback.format_exc())
         messagebox.showerror("엑셀 읽기 실패", f"{config.EXCEL_PATH}\n\n{e}")
         return
     if not patients:
@@ -385,8 +419,10 @@ def main() -> None:
         messagebox.showerror("환자 목록 없음",
                              "sample_list 시트가 비어 있습니다.\n먼저 step1_make_sample.bat 을 실행하세요.")
         return
+    log(f"환자 {len(patients)}명 읽음. 프로그램 창을 엽니다.")
     LabelerApp(root, patients)
     root.mainloop()
+    log("프로그램 종료")
 
 
 if __name__ == "__main__":
