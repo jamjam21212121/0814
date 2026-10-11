@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import pydicom
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 import dataset
 
@@ -88,3 +88,47 @@ def to_display(arr: np.ndarray, level: float, width: float) -> Image.Image:
     lo = level - width / 2
     img = np.clip((arr - lo) / width * 255.0, 0, 255).astype(np.uint8)
     return Image.fromarray(img)   # uint8 2차원 → 흑백(L)
+
+
+def _font(size: int):
+    for name in ("malgun.ttf", "arial.ttf", "DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def make_capture(arr: np.ndarray, level: float, width: float, lesion: tuple[float, float],
+                 title: str, levels: list[dict], instance: int, min_size: int = 640) -> Image.Image:
+    """
+    애매 병변 캡처: 현재 밝기/대비의 슬라이스 + 클릭 위치(주황 원) + 레벨 표시 + 설명 글자.
+    작은 영상은 min_size 픽셀 이상으로 키워서 저장합니다.
+    """
+    img = to_display(arr, level, width).convert("RGB")
+    h, w = arr.shape
+    s = max(1.0, min_size / max(h, w))
+    if s > 1:
+        img = img.resize((round(w * s), round(h * s)), Image.Resampling.BILINEAR)
+    draw = ImageDraw.Draw(img)
+    to_img = lambda x, y: ((x + 0.5) * s - 0.5, (y + 0.5) * s - 0.5)
+    small = _font(max(12, img.width // 45))
+
+    for p in levels:                                  # 레벨 위치 (같은 슬라이스면 진하게)
+        cx, cy = to_img(p["x"], p["y"])
+        color = (124, 252, 0) if p["instance"] == instance else (95, 158, 95)
+        draw.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], outline=color, width=2)
+        draw.text((cx - 8, cy), p["level"], fill=color, font=small, anchor="rm", stroke_width=2, stroke_fill="black")
+
+    cx, cy = to_img(*lesion)                          # 병변 위치
+    r = max(10, img.width // 40)
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 140, 0), width=3)
+    draw.line([cx - r * 1.8, cy, cx - r * 1.2, cy], fill=(255, 140, 0), width=3)
+    draw.line([cx + r * 1.2, cy, cx + r * 1.8, cy], fill=(255, 140, 0), width=3)
+
+    draw.rectangle([0, 0, img.width, small.size * 2 if hasattr(small, "size") else 30], fill=(0, 0, 0))
+    draw.text((8, 4), title, fill=(255, 200, 80), font=small)
+    return img

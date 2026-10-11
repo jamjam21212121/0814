@@ -2,8 +2,9 @@
 """
 LumbarDISC 쉬모를 결절 라벨링 프로그램
   ② 이미지 창과 슬라이스 넘기기
-  ③ 레벨 위치 표시 (train_label_coordinates.csv)  ← 지금 단계
-  (④ 분류 입력·엑셀 기록, ⑤ 이어하기, ⑥ MicroDicom 열기는 단계별로 추가)
+  ③ 레벨 위치 표시 (train_label_coordinates.csv)
+  ④ 분류 입력과 엑셀 기록  ← 지금 단계
+  (⑤ 이어하기, ⑥ MicroDicom 열기는 다음 단계에서 추가)
 
 실행: run_labeler.bat 더블클릭
 
@@ -11,6 +12,9 @@ LumbarDISC 쉬모를 결절 라벨링 프로그램
   환자      : 왼쪽 목록 클릭, ← → 키, [이전 환자]/[다음 환자] 버튼
   슬라이스  : 마우스 휠, ↑ ↓ 키, 이미지 아래 슬라이더
   밝기/대비 : 이미지 위에서 오른쪽 버튼 드래그 (위아래=밝기, 좌우=대비), 슬라이더, [초기화]
+  판독      : N=정상, S=쉬모를 결절, A=애매
+              S/A 뒤에 척추(1~6 = L1~S1)와 종판(U=상종판, D=하종판)을 고르고 영상 클릭
+              병변이 여러 개면 척추·종판 선택 → 클릭을 반복, 끝나면 Esc
 """
 from __future__ import annotations
 
@@ -25,8 +29,11 @@ from PIL import Image, ImageTk
 
 import config
 import dataset
+import excel_io
 import imaging
 import workbook
+from workbook import SCHMORL, UNCERTAIN, VERTEBRAE
+
 
 def log(text: str) -> None:
     """검은 창(콘솔)에 진행 상황 표시."""
@@ -35,48 +42,68 @@ def log(text: str) -> None:
 
 LEVEL_COLOR = "#7CFC00"        # 라벨 좌표를 찍은 슬라이스: 밝은 연두
 LEVEL_COLOR_DIM = "#5f9e5f"    # 다른 슬라이스: 흐린 초록 (위치 참고용)
-
+LESION_COLOR = {SCHMORL: "#ff4040", UNCERTAIN: "#ffa020"}     # 쉬모를=빨강, 애매=주황
+LABEL_KO = {SCHMORL: "쉬모를", UNCERTAIN: "애매"}
+ENDPLATE_KO = {"superior": "상종판", "inferior": "하종판"}
 STATUS_COLORS = {config.STATUS_DONE: "#d6f0d6", config.STATUS_UNCERTAIN: "#ffe2b0"}
+# 한글 입력 상태에서 눌린 키 → 영문 키 (두벌식 자판 기준)
+HANGUL_TO_KEY = {"ㅜ": "n", "ㄴ": "s", "ㅁ": "a", "ㅕ": "u", "ㅇ": "d"}
+
 HELP_TEXT = """조작법
+
+■ 판독 입력 (오른쪽 칸)
+  N = 정상 → 다음 환자로
+  S = 쉬모를 결절, A = 애매
+   ① 척추 1~6 (L1~L5, S1)
+   ② 종판 U=상종판, D=하종판
+   ③ 영상에서 병변 클릭
+  병변이 여러 개면 ①~③ 반복
+  Esc = 병변 입력 끝내기
+  Del = 고른 병변 삭제
+  Ctrl+S = 저장 다시 시도
+  ※ 한/영 키로 영문 상태에서
+    사용하세요 (버튼도 됩니다)
 
 ■ 환자 이동
   목록 클릭, ← → 키
 
 ■ 슬라이스 넘기기
-  마우스 휠, ↑ ↓ 키,
-  이미지 아래 슬라이더
+  마우스 휠, ↑ ↓ 키, 슬라이더
 
 ■ 밝기 / 대비
-  이미지 위에서
   오른쪽 버튼 누른 채 드래그
-   · 위아래 = 밝기
-   · 좌우 = 대비
+   · 위아래 = 밝기 · 좌우 = 대비
   슬라이더, [초기화] 버튼
-
-■ 좌표 확인
-  마우스를 올리면 아래
-  상태줄에 원본 픽셀 x, y
-  (클릭하면 그 위치 고정 표시)
 
 ■ 레벨 표시 (L1/L2 ~ L5/S1)
   F2 키, [레벨 표시] 체크
-  · 진한 연두 = 좌표를 찍은
-    슬라이스
-  · 흐린 초록 = 다른 슬라이스
-    (위치 참고용)
   Home 키 = 좌표 슬라이스로
 
 ■ 이 칸 열기/닫기
-  F1 키, [조작법 보기] 버튼
+  F1 키, [조작법 보기] 버튼"""
 
-※ 분류 입력 N/S/A(④)는
-   다음 단계에서 추가됩니다."""
+
+def key_letter(event) -> str | None:
+    """눌린 키를 영문 소문자/숫자로 (한글 입력 상태·숫자패드도 처리)."""
+    if event.state & 0x0004:                      # Ctrl 조합은 따로 처리
+        return None
+    ks = event.keysym
+    if len(ks) == 1 and ks.isascii() and ks.isalnum():
+        return ks.lower()
+    if ks.startswith("KP_") and ks[3:].isdigit():
+        return ks[3:]
+    if event.char in HANGUL_TO_KEY:
+        return HANGUL_TO_KEY[event.char]
+    if sys.platform == "win32" and (65 <= event.keycode <= 90 or 48 <= event.keycode <= 57):
+        return chr(event.keycode).lower()
+    return None
 
 
 class LabelerApp:
-    def __init__(self, root: tk.Tk, patients: list[workbook.Patient]):
+    def __init__(self, root: tk.Tk, patients: list[workbook.Patient], store: workbook.LabelStore):
         self.root = root
         self.patients = patients
+        self.store = store
         self.current: int | None = None      # 현재 환자 번호(0부터)
         self.series: imaging.SeriesData | None = None
         self.slice_idx = 0
@@ -84,21 +111,26 @@ class LabelerApp:
         self.view = None                     # 화면 배치 (원본 픽셀 ↔ 화면 좌표 변환용)
         self.message: str | None = None      # 영상 대신 보여 줄 안내/오류 문구
         self.coords: list[dict] = []         # 현재 환자의 레벨 좌표 (train_label_coordinates.csv)
+        self.mode: str | None = None         # 병변 입력 중이면 SCHMORL 또는 UNCERTAIN
         self._photo = None
         self._drag = None
         self._syncing = False
 
         self._build_ui()
         self._bind_keys()
-        start = next((i for i, p in enumerate(patients) if p.status == config.STATUS_TODO), 0)
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
+        start = next((i for i, p in enumerate(patients)
+                      if self.record_of(i).status() == config.STATUS_TODO), 0)
         self.root.after(50, lambda: self.load_patient(start))
 
     # ── 화면 구성 ─────────────────────────────────────────
     def _build_ui(self) -> None:
         r = self.root
         r.title("LumbarDISC 쉬모를 결절 라벨링")
-        r.geometry("1150x780")
-        r.minsize(900, 600)
+        w = min(1700, r.winfo_screenwidth() - 40)
+        h = min(900, r.winfo_screenheight() - 80)
+        r.geometry(f"{w}x{h}")
+        r.minsize(1000, 600)
 
         status_bar = ttk.Frame(r, relief="sunken", padding=(6, 2))
         status_bar.pack(side="bottom", fill="x")
@@ -109,8 +141,16 @@ class LabelerApp:
 
         main = ttk.Frame(r)
         main.pack(fill="both", expand=True)
+        self._build_patient_list(main)
+        self._build_input_panel(main)
 
-        # 왼쪽: 환자 목록
+        # 조작법 — 기본은 숨김, [조작법 보기] 버튼이나 F1 로 열고 닫음
+        self.help_frame = ttk.Frame(main, padding=(4, 6, 8, 6))
+        ttk.Label(self.help_frame, text=HELP_TEXT, justify="left").pack(anchor="nw")
+
+        self._build_image_area(main)
+
+    def _build_patient_list(self, main) -> None:
         left = ttk.Frame(main, padding=6)
         left.pack(side="left", fill="y")
         ttk.Label(left, text=f"환자 목록 ({len(self.patients)}명)").pack(anchor="w")
@@ -135,25 +175,80 @@ class LabelerApp:
         self.tree = ttk.Treeview(box, columns=("no", "study", "status"), show="headings",
                                  selectmode="browse", height=10)
         for col, text in [("no", "번호"), ("study", "study_id"), ("status", "상태")]:
-            width = widths[col]
             self.tree.heading(col, text=text)
-            self.tree.column(col, width=width, anchor="center", stretch=False)
+            self.tree.column(col, width=widths[col], anchor="center", stretch=False)
         for status, color in STATUS_COLORS.items():
             self.tree.tag_configure(status, background=color)
         for i, p in enumerate(self.patients):
-            self.tree.insert("", "end", iid=str(i), values=(p.sample_no or i + 1, p.study_id, p.status),
-                             tags=(p.status,))
+            status = self.record_of(i).status()
+            self.tree.insert("", "end", iid=str(i), values=(p.sample_no or i + 1, p.study_id, status),
+                             tags=(status,))
         sb = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="y")
         sb.pack(side="left", fill="y")
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
-        # 오른쪽: 조작법 — 기본은 숨김, [조작법 보기] 버튼이나 F1 로 열고 닫음
-        self.help_frame = ttk.Frame(main, padding=(4, 6, 8, 6))
-        ttk.Label(self.help_frame, text=HELP_TEXT, justify="left").pack(anchor="nw")
+    def _build_input_panel(self, main) -> None:
+        """오른쪽: 판독 입력 칸 (N/S/A, 척추·종판 선택, 기록된 병변 목록, 저장 상태)."""
+        panel = self.input_panel = ttk.Frame(main, padding=(6, 6, 8, 6))
+        panel.pack(side="right", fill="y")
+        bold = self._bold_font()
+        ttk.Label(panel, text="판독 입력", font=bold).pack(anchor="w")
+        self.patient_status_var = tk.StringVar()
+        ttk.Label(panel, textvariable=self.patient_status_var).pack(anchor="w", pady=(2, 6))
 
-        # 가운데: 이미지
+        row = ttk.Frame(panel)
+        row.pack(fill="x")
+        ttk.Button(row, text="N 정상", command=self.press_normal).pack(side="left", expand=True, fill="x")
+        ttk.Button(row, text="S 쉬모를", command=lambda: self.start_lesion(SCHMORL)).pack(side="left", expand=True, fill="x")
+        ttk.Button(row, text="A 애매", command=lambda: self.start_lesion(UNCERTAIN)).pack(side="left", expand=True, fill="x")
+
+        box = self.lesion_box = ttk.LabelFrame(panel, text="병변 입력", padding=6)
+        box.pack(fill="x", pady=(10, 0))
+        self.mode_var = tk.StringVar(value="꺼짐 (S 또는 A를 누르세요)")
+        ttk.Label(box, textvariable=self.mode_var, font=bold).pack(anchor="w")
+        ttk.Label(box, text="① 척추 (키 1~6)").pack(anchor="w", pady=(6, 0))
+        self.vertebra_var = tk.StringVar(value="")
+        vrow = ttk.Frame(box)
+        vrow.pack(fill="x")
+        for v in VERTEBRAE:
+            ttk.Radiobutton(vrow, text=v, value=v, variable=self.vertebra_var, style="Toolbutton",
+                            command=lambda v=v: self.select_vertebra(v)).pack(side="left", expand=True, fill="x")
+        ttk.Label(box, text="② 종판 (U=상종판, D=하종판)").pack(anchor="w", pady=(6, 0))
+        self.endplate_var = tk.StringVar(value="")
+        erow = ttk.Frame(box)
+        erow.pack(fill="x")
+        self.endplate_buttons = {}
+        for e in ("superior", "inferior"):
+            b = ttk.Radiobutton(erow, text=f"{ENDPLATE_KO[e]} ({'U' if e == 'superior' else 'D'})",
+                                value=e, variable=self.endplate_var, style="Toolbutton",
+                                command=lambda e=e: self.select_endplate(e))
+            b.pack(side="left", expand=True, fill="x")
+            self.endplate_buttons[e] = b
+        self.hint_var = tk.StringVar()
+        wrap = tkfont.nametofont("TkDefaultFont").measure("가") * 17   # 글꼴 크기에 맞춘 줄바꿈 폭
+        ttk.Label(box, textvariable=self.hint_var, wraplength=wrap, justify="left",
+                  foreground="#1f5fbf").pack(anchor="w", pady=(6, 0))
+        ttk.Button(box, text="병변 입력 끝내기 (Esc)", command=self.end_lesion).pack(fill="x", pady=(6, 0))
+
+        lf = ttk.LabelFrame(panel, text="기록된 병변", padding=6)
+        lf.pack(fill="both", expand=True, pady=(10, 0))
+        self.lesion_list = tk.Listbox(lf, height=7, activestyle="none", exportselection=False)
+        self.lesion_list.pack(fill="both", expand=True)
+        self.lesion_list.bind("<<ListboxSelect>>", lambda e: self.render())
+        self.lesion_list.bind("<Double-Button-1>", lambda e: self.go_to_lesion())
+        brow = ttk.Frame(lf)
+        brow.pack(fill="x", pady=(4, 0))
+        ttk.Button(brow, text="그 슬라이스로", command=self.go_to_lesion).pack(side="left", expand=True, fill="x")
+        ttk.Button(brow, text="삭제 (Del)", command=self.delete_lesion).pack(side="left", expand=True, fill="x")
+
+        self.save_var = tk.StringVar(value="")
+        self.save_label = tk.Label(panel, textvariable=self.save_var, anchor="w", justify="left",
+                                   wraplength=wrap)
+        self.save_label.pack(fill="x", pady=(8, 0))
+
+    def _build_image_area(self, main) -> None:
         center = self.center_frame = ttk.Frame(main, padding=6)
         center.pack(side="left", fill="both", expand=True)
         # 제목 줄: 오른쪽 [조작법] 버튼을 먼저 붙여서 창이 좁아도 버튼은 보이게 (제목이 대신 잘림)
@@ -178,17 +273,18 @@ class LabelerApp:
         ttk.Checkbutton(row, text="레벨 표시 (F2)", variable=self.show_levels,
                         command=self.render).pack(side="right", padx=(10, 0))
         self.slice_text = tk.StringVar()
-        ttk.Label(row, textvariable=self.slice_text, width=19).pack(side="right")
+        ttk.Label(row, textvariable=self.slice_text, width=14).pack(side="right")
         self.slice_scale = ttk.Scale(row, from_=0, to=1, orient="horizontal", command=self._on_slice_scale)
         self.slice_scale.pack(side="left", fill="x", expand=True, padx=6)
 
         self.bright = tk.DoubleVar(value=0)
         self.contrast = tk.DoubleVar(value=0)
+        # [초기화] 버튼을 먼저 붙이고, 밝기·대비 슬라이더는 남는 폭에 맞춰 늘고 줄어듦
+        ttk.Button(row2, text="초기화", command=self.reset_window).pack(side="right")
         for text, var in [("밝기", self.bright), ("대비", self.contrast)]:
             ttk.Label(row2, text=text).pack(side="left")
-            ttk.Scale(row2, from_=-100, to=100, orient="horizontal", variable=var, length=140,
-                      command=lambda _v: self.render()).pack(side="left", padx=(4, 14))
-        ttk.Button(row2, text="밝기/대비 초기화", command=self.reset_window).pack(side="left")
+            ttk.Scale(row2, from_=-100, to=100, orient="horizontal", variable=var, length=60,
+                      command=lambda _v: self.render()).pack(side="left", padx=(4, 12), fill="x", expand=True)
 
         c = self.canvas
         c.bind("<Configure>", lambda e: self.render())
@@ -221,9 +317,12 @@ class LabelerApp:
         actions = {"<Up>": lambda: self.step_slice(-1), "<Down>": lambda: self.step_slice(1),
                    "<Left>": lambda: self.step_patient(-1), "<Right>": lambda: self.step_patient(1),
                    "<F1>": self.toggle_help, "<F2>": self.toggle_levels,
-                   "<Home>": self.go_to_label_slice}
+                   "<Home>": self.go_to_label_slice, "<Escape>": self.end_lesion,
+                   "<Delete>": self.delete_lesion, "<Control-s>": self.retry_save,
+                   "<Control-S>": self.retry_save}
         for seq, fn in actions.items():
             self.root.bind_class(tag, seq, lambda e, f=fn: (f(), "break")[1])
+        self.root.bind_class(tag, "<Key>", self._on_key)
         self.root.bind_class(tag, "<MouseWheel>", self._on_wheel)          # Windows
         self.root.bind_class(tag, "<Button-4>", lambda e: self._on_wheel(e, -1))  # Linux
         self.root.bind_class(tag, "<Button-5>", lambda e: self._on_wheel(e, 1))
@@ -234,6 +333,26 @@ class LabelerApp:
                 add(child)
         add(self.root)
 
+    def _on_key(self, event):
+        k = key_letter(event)
+        if k is None:
+            return None
+        if k == "n":
+            self.press_normal()
+        elif k == "s":
+            self.start_lesion(SCHMORL)
+        elif k == "a":
+            self.start_lesion(UNCERTAIN)
+        elif k in "123456" and len(k) == 1:
+            self.select_vertebra(VERTEBRAE[int(k) - 1])
+        elif k == "u":
+            self.select_endplate("superior")
+        elif k == "d":
+            self.select_endplate("inferior")
+        else:
+            return None
+        return "break"
+
     def toggle_help(self) -> None:
         if self.help_frame.winfo_ismapped():
             self.help_frame.pack_forget()
@@ -243,6 +362,13 @@ class LabelerApp:
             self.help_button.configure(text="조작법 닫기 (F1)")
 
     # ── 환자 ──────────────────────────────────────────────
+    def record_of(self, index: int) -> workbook.Record:
+        return self.store.records[self.patients[index].study_id]
+
+    @property
+    def record(self) -> workbook.Record | None:
+        return self.record_of(self.current) if self.current is not None else None
+
     def _on_tree_select(self, _event=None) -> None:
         sel = self.tree.selection()
         if sel:
@@ -258,10 +384,14 @@ class LabelerApp:
         if index == self.current and self.series is not None:
             return
         self.current = index
+        self.mode = None
         p = self.patients[index]
         self.tree.selection_set(str(index))
         self.tree.see(str(index))
         self.title_var.set(f"[{index + 1}/{len(self.patients)}] study {p.study_id}")
+        self.hint_var.set("")
+        self.lesion_list.selection_clear(0, "end")
+        self.refresh_panel()
 
         self.series = None                       # 이전 환자 영상은 메모리에서 해제
         self.coords = []
@@ -306,6 +436,275 @@ class LabelerApp:
         self._syncing = False
         self.render()
 
+    # ── ④ 판독 입력 ───────────────────────────────────────
+    def press_normal(self) -> None:
+        rec = self.record
+        if rec is None:
+            return
+        if rec.lesions:
+            blocked = self._human_input_of(rec.lesions)
+            if blocked:
+                messagebox.showwarning("정상으로 바꿀 수 없음",
+                                       "교수님 입력이 있는 병변이 있어 지울 수 없습니다.\n\n" + "\n".join(blocked)
+                                       + "\n\n엑셀에서 직접 확인해 주세요.")
+                return
+            if not messagebox.askyesno("정상으로 바꾸기",
+                                       f"기록된 병변 {len(rec.lesions)}개를 지우고 '정상'으로 바꿀까요?"):
+                return
+            for les in rec.lesions:
+                self._remove_capture(les)
+        self.mode = None
+        rec.lesions = []
+        rec.labeled = True
+        rec.labeled_at = workbook.now_text()
+        self.commit()
+        if config.AUTO_NEXT_AFTER_NORMAL and self.current < len(self.patients) - 1:
+            self.load_patient(self.current + 1)
+
+    def start_lesion(self, label: str) -> None:
+        if self.current is None:
+            return
+        self.mode = label
+        self.vertebra_var.set("")
+        self.endplate_var.set("")
+        self.refresh_panel()
+        self.render()
+
+    def end_lesion(self) -> None:
+        if self.mode is not None:
+            self.hint_var.set("")
+        self.mode = None
+        self.vertebra_var.set("")
+        self.endplate_var.set("")
+        self.refresh_panel()
+        self.render()
+
+    def select_vertebra(self, v: str) -> None:
+        if self.mode is None:
+            self.hint_var.set("먼저 S(쉬모를) 또는 A(애매)를 누르세요.")
+            return
+        self.vertebra_var.set(v)
+        if v == "S1":                              # S1 은 상종판만
+            self.endplate_var.set("superior")
+        self.refresh_panel()
+        self.render()
+
+    def select_endplate(self, e: str) -> None:
+        if self.mode is None:
+            self.hint_var.set("먼저 S(쉬모를) 또는 A(애매)를 누르세요.")
+            return
+        if e == "inferior" and self.vertebra_var.get() == "S1":
+            self.hint_var.set("S1은 상종판만 기록합니다.")
+            self.root.bell()
+            return
+        self.endplate_var.set(e)
+        self.refresh_panel()
+        self.render()
+
+    def add_lesion(self, x: float, y: float) -> None:
+        p = self.patients[self.current]
+        rec = self.record
+        v, e = self.vertebra_var.get(), self.endplate_var.get()
+        les = workbook.Lesion(lesion_id=self.store.new_lesion_id(p.study_id), study_id=p.study_id,
+                              series_id=p.t2_series, instance=self.current_instance(), vertebra=v,
+                              endplate=e, x=x, y=y, label=self.mode, labeled_at=workbook.now_text())
+        if self.mode == UNCERTAIN:
+            les.capture_file = self._save_capture(les, rec)
+        rec.lesions.append(les)
+        rec.labeled = True
+        rec.labeled_at = les.labeled_at
+        log(f"  병변 기록: {les.lesion_id} {v} {e} {les.label} instance {les.instance} "
+            f"x={x:.1f} y={y:.1f}" + (f" 캡처 {les.capture_file}" if les.capture_file else ""))
+        self.vertebra_var.set("")                  # 다음 병변은 척추·종판을 새로 고르도록
+        self.endplate_var.set("")
+        self.commit()
+        self.lesion_list.selection_clear(0, "end")
+        self.hint_var.set(f"기록됨: {v} {ENDPLATE_KO[e]} ({LABEL_KO[les.label]}).\n"
+                          "병변이 더 있으면 척추·종판을 고르고 클릭, 끝났으면 Esc 또는 → 다음 환자.")
+
+    def _capture_name(self, les: workbook.Lesion, rec: workbook.Record) -> str:
+        base = f"{les.study_id}_{les.vertebra}{'sup' if les.endplate == 'superior' else 'inf'}"
+        used = {x.capture_file for x in rec.lesions}
+        name, n = f"{base}.png", 2
+        while name in used or (config.CAPTURE_DIR / name).exists():
+            name, n = f"{base}_{n}.png", n + 1
+        return name
+
+    def _save_capture(self, les: workbook.Lesion, rec: workbook.Record) -> str:
+        try:
+            config.CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+            name = self._capture_name(les, rec)
+            level, width = imaging.adjusted_window(self.level0, self.width0,
+                                                   self.bright.get(), self.contrast.get())
+            title = (f"study {les.study_id} | {les.vertebra} {les.endplate} | Uncertain | "
+                     f"instance {les.instance} | x={les.x:.1f}, y={les.y:.1f}")
+            img = imaging.make_capture(self.series.get(self.slice_idx), level, width, (les.x, les.y),
+                                       title, self.coords, les.instance)
+            img.save(config.CAPTURE_DIR / name)
+            return name
+        except Exception as e:
+            log("[오류] 캡처 저장 실패\n" + traceback.format_exc())
+            messagebox.showwarning("캡처 저장 실패", f"병변은 기록하지만 캡처 이미지를 저장하지 못했습니다.\n{e}")
+            return ""
+
+    def _remove_capture(self, les: workbook.Lesion) -> None:
+        if les.capture_file:
+            try:
+                (config.CAPTURE_DIR / les.capture_file).unlink()
+            except OSError:
+                pass
+
+    def _human_input_of(self, lesions) -> list[str]:
+        """노란 칸(교수님 입력)에 내용이 있는 병변 목록."""
+        try:
+            inputs = self.store.human_inputs(lesions)
+        except Exception:
+            log("[경고] 교수님 입력 확인 실패\n" + traceback.format_exc())
+            inputs = {}
+        return [f"{lid}: " + ", ".join(items) for lid, items in inputs.items() if items]
+
+    def selected_lesion(self) -> workbook.Lesion | None:
+        rec = self.record
+        sel = self.lesion_list.curselection()
+        if rec is None or not sel or sel[0] >= len(rec.lesions):
+            return None
+        return rec.lesions[sel[0]]
+
+    def delete_lesion(self) -> None:
+        les = self.selected_lesion()
+        if les is None:
+            self.hint_var.set("지울 병변을 '기록된 병변' 목록에서 먼저 고르세요.")
+            return
+        blocked = self._human_input_of([les])
+        if blocked:
+            messagebox.showwarning("삭제할 수 없음", "교수님 입력이 있는 병변이라 지울 수 없습니다.\n\n"
+                                   + "\n".join(blocked) + "\n\n엑셀에서 직접 확인해 주세요.")
+            return
+        if not messagebox.askyesno("병변 삭제", f"{self._lesion_text(les)}\n이 병변을 지울까요?"):
+            return
+        rec = self.record
+        rec.lesions.remove(les)
+        self._remove_capture(les)
+        if not rec.lesions:                        # 병변이 하나도 없으면 다시 미완료
+            rec.labeled = False
+            rec.labeled_at = ""
+            self.mode = None
+            self.vertebra_var.set("")
+            self.endplate_var.set("")
+            self.hint_var.set("병변이 모두 지워져 '미완료'로 돌아갔습니다. 정상이면 N을 누르세요.")
+        else:
+            rec.labeled_at = workbook.now_text()
+        self.commit()
+
+    def go_to_lesion(self) -> None:
+        les = self.selected_lesion()
+        if les is None or not self.series:
+            return
+        idx = self.series.index_of_instance(les.instance)
+        if idx is not None:
+            self.step_slice(idx - self.slice_idx)
+            self.render()
+
+    def _lesion_text(self, les: workbook.Lesion) -> str:
+        num = les.lesion_id.rsplit("_", 1)[-1]
+        return f"#{num} {les.vertebra} {ENDPLATE_KO.get(les.endplate, les.endplate)} " \
+               f"{LABEL_KO.get(les.label, les.label)}  inst {les.instance}"
+
+    # ── 저장 ──────────────────────────────────────────────
+    def commit(self) -> None:
+        """현재 환자 결과를 바로 엑셀에 저장하고 화면을 갱신."""
+        self.store.dirty.add(self.patients[self.current].study_id)
+        self.save()
+        self.refresh_panel()
+        self.refresh_patient_row(self.current)
+        self.render()
+
+    def save(self) -> bool:
+        try:
+            self.store.save()
+        except excel_io.ExcelLockedError as e:
+            log("[저장 실패] " + str(e).replace("\n", " "))
+            self._set_save_state(False)
+            messagebox.showwarning("엑셀 저장 실패",
+                                   "엑셀 파일이 열려 있어 저장하지 못했습니다.\n\n"
+                                   "엑셀을 닫은 뒤 Ctrl+S 를 누르거나, 다음 입력 때 자동으로 다시 저장합니다.\n"
+                                   "(입력한 내용은 프로그램이 기억하고 있습니다)")
+            return False
+        except Exception as e:
+            log("[저장 실패]\n" + traceback.format_exc())
+            self._set_save_state(False)
+            messagebox.showerror("엑셀 저장 실패", f"{e!r}\n\n자세한 내용은 검은 창을 확인하세요.")
+            return False
+        self._set_save_state(True)
+        return True
+
+    def retry_save(self) -> None:
+        if not self.store.dirty:
+            self._set_save_state(True)
+            return
+        if self.save():
+            for i in range(len(self.patients)):
+                self.refresh_patient_row(i)
+
+    def _set_save_state(self, ok: bool) -> None:
+        if ok:
+            self.save_var.set(f"✔ 엑셀 저장됨 ({time.strftime('%H:%M:%S')})")
+            self.save_label.configure(fg="#1a7f37")
+        else:
+            self.save_var.set(f"✖ 저장 안 됨 ({len(self.store.dirty)}명)\n엑셀을 닫고 Ctrl+S")
+            self.save_label.configure(fg="#c62828")
+
+    def on_close(self) -> None:
+        while self.store.dirty:
+            again = messagebox.askretrycancel(
+                "저장되지 않은 내용", f"아직 엑셀에 저장되지 않은 환자가 {len(self.store.dirty)}명 있습니다.\n"
+                "엑셀을 닫고 [다시 시도]를 누르세요.")
+            if not again:
+                if messagebox.askyesno("그래도 종료", "저장하지 않고 종료하면 이 내용은 사라집니다.\n종료할까요?"):
+                    break
+                continue
+            try:
+                self.store.save()
+            except Exception:
+                log("[저장 실패]\n" + traceback.format_exc())
+        self.root.destroy()
+
+    # ── 화면 갱신 ─────────────────────────────────────────
+    def refresh_patient_row(self, index: int) -> None:
+        p = self.patients[index]
+        status = self.record_of(index).status()
+        self.tree.item(str(index), values=(p.sample_no or index + 1, p.study_id, status), tags=(status,))
+
+    def refresh_panel(self) -> None:
+        rec = self.record
+        if rec is None:
+            return
+        status = rec.status()
+        detail = {config.STATUS_TODO: "아직 판독 전",
+                  config.STATUS_DONE: "정상" if not rec.lesions else f"병변 {len(rec.lesions)}개",
+                  config.STATUS_UNCERTAIN: f"병변 {len(rec.lesions)}개 (애매 포함)"}[status]
+        self.patient_status_var.set(f"현재 환자: {status}  ·  {detail}")
+        if self.mode is None:
+            self.mode_var.set("꺼짐 (S 또는 A를 누르세요)")
+        else:
+            self.mode_var.set(f"{'S 쉬모를 결절' if self.mode == SCHMORL else 'A 애매'} 입력 중")
+            v, e = self.vertebra_var.get(), self.endplate_var.get()
+            if not v:
+                self.hint_var.set("① 척추를 고르세요 (키 1~6).")
+            elif not e:
+                self.hint_var.set(f"{v} 선택됨. ② 종판을 고르세요 (U=상종판, D=하종판).")
+            else:
+                self.hint_var.set(f"{v} {ENDPLATE_KO[e]} → ③ 영상에서 병변 위치를 클릭하세요.")
+        state = ["!disabled"] if self.vertebra_var.get() != "S1" else ["disabled"]
+        self.endplate_buttons["inferior"].state(state)
+        sel = self.lesion_list.curselection()
+        self.lesion_list.delete(0, "end")
+        for les in rec.lesions:
+            self.lesion_list.insert("end", self._lesion_text(les))
+            self.lesion_list.itemconfigure("end", foreground=LESION_COLOR[les.label] if les.label in LESION_COLOR else "black")
+        if sel and sel[0] < len(rec.lesions):
+            self.lesion_list.selection_set(sel[0])
+
     # ── 레벨 좌표 ─────────────────────────────────────────
     def label_slice_index(self) -> int | None:
         """레벨 좌표가 가장 많이 찍힌 instance 의 슬라이스 번호 (없으면 None)."""
@@ -329,6 +728,12 @@ class LabelerApp:
         self.show_levels.set(not self.show_levels.get())
         self.render()
 
+    def _outlined_text(self, x, y, text, color, anchor, tags) -> None:
+        for dx, dy in ((1, 1), (-1, -1), (1, -1), (-1, 1)):       # 글자 테두리(검정)
+            self.canvas.create_text(x + dx, y + dy, text=text, anchor=anchor, fill="black",
+                                    font=self._level_font, tags=tags)
+        self.canvas.create_text(x, y, text=text, anchor=anchor, fill=color, font=self._level_font, tags=tags)
+
     def draw_levels(self) -> None:
         """L1/L2 ~ L5/S1 위치에 표시. 좌표를 찍은 슬라이스는 진하게, 다른 슬라이스는 흐리게."""
         c = self.canvas
@@ -343,11 +748,40 @@ class LabelerApp:
             c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=2,
                           fill=color if same else "", tags="level")
             text = p["level"] if same else f'{p["level"]} (inst {p["instance"]})'
-            for dx, dy in ((1, 1), (-1, -1), (1, -1), (-1, 1)):       # 글자 테두리(검정)
-                c.create_text(cx - 10 + dx, cy + dy, text=text, anchor="e", fill="black",
-                              font=self._level_font, tags="level")
-            c.create_text(cx - 10, cy, text=text, anchor="e", fill=color,
-                          font=self._level_font, tags="level")
+            self._outlined_text(cx - 10, cy, text, color, "e", "level")
+
+    def draw_lesions(self) -> None:
+        """기록된 병변: 같은 슬라이스면 진한 원 + 번호, 다른 슬라이스면 점선 원 (inst 표시)."""
+        rec = self.record
+        if rec is None:
+            return
+        inst = self.current_instance()
+        selected = self.selected_lesion()
+        for les in rec.lesions:
+            cx, cy = self.pixel_to_canvas(les.x, les.y)
+            color = LESION_COLOR.get(les.label, "#ff4040")
+            num = les.lesion_id.rsplit("_", 1)[-1]
+            short = f"#{num} {les.vertebra}{'상' if les.endplate == 'superior' else '하'}"
+            if les.instance == inst:
+                r = 9
+                width = 4 if les is selected else 2
+                self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=width, tags="lesion")
+                self.canvas.create_line(cx - 3, cy, cx + 3, cy, fill=color, tags="lesion")
+                self.canvas.create_line(cx, cy - 3, cx, cy + 3, fill=color, tags="lesion")
+                self._outlined_text(cx + r + 4, cy, short, color, "w", "lesion")
+            else:
+                r = 7
+                self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=1,
+                                        dash=(3, 3), tags="lesion")
+                self._outlined_text(cx + r + 4, cy, f"{short} (inst {les.instance})", color, "w", "lesion")
+
+    def draw_mode_banner(self) -> None:
+        if self.mode is None:
+            return
+        v, e = self.vertebra_var.get(), self.endplate_var.get()
+        target = f"{v} {ENDPLATE_KO[e]} → 병변 클릭" if v and e else "척추·종판을 고르세요"
+        text = f"{'S 쉬모를' if self.mode == SCHMORL else 'A 애매'} 입력 중: {target}   (Esc 끝내기)"
+        self._outlined_text(10, 12, text, LESION_COLOR[self.mode], "w", "banner")
 
     # ── 슬라이스 ──────────────────────────────────────────
     def step_slice(self, delta: int) -> None:
@@ -429,6 +863,8 @@ class LabelerApp:
         self.view = {"ox": ox, "oy": oy, "sx": dw / w, "sy": dh / h, "w": w, "h": h}
         if self.show_levels.get():
             self.draw_levels()
+        self.draw_lesions()
+        self.draw_mode_banner()
         self._update_info()
 
     def pixel_to_canvas(self, x: float, y: float) -> tuple[float, float]:
@@ -457,7 +893,7 @@ class LabelerApp:
             self.info_var.set("영상 없음" if self.series is not None else "")
             return
         n = len(self.series)
-        self.slice_text.set(f"{self.slice_idx + 1} / {n}  instance {self.current_instance()}")
+        self.slice_text.set(f"{self.slice_idx + 1}/{n}  inst {self.current_instance()}")
         gap = "   ※ instance 번호 일부 누락 (다운로드 미완료 의심)" if self.series.has_gaps() else ""
         series_id = self.patients[self.current].t2_series if self.current is not None else ""
         if self.coords:
@@ -481,14 +917,22 @@ class LabelerApp:
         self.cursor_var.set(f"커서  {text}" if text else "")
 
     def _on_left_click(self, e) -> None:
-        # ②단계: 클릭 위치 확인용 (④단계에서 병변 기록으로 바뀝니다)
-        text = self._pixel_text(e.x, e.y)
-        if text:
-            self.cursor_var.set(f"클릭  instance {self.current_instance()},  {text}")
-            r = 5
-            self.canvas.delete("probe")
-            self.canvas.create_oval(e.x - r, e.y - r, e.x + r, e.y + r, outline="#00e5ff",
-                                    width=2, tags="probe")
+        pos = self.canvas_to_pixel(e.x, e.y)
+        if pos is None or self.message:
+            return
+        if self.mode is not None:
+            if not (self.vertebra_var.get() and self.endplate_var.get()):
+                self.hint_var.set("척추와 종판을 먼저 고른 뒤 클릭하세요.")
+                self.root.bell()
+                return
+            self.add_lesion(*pos)
+            return
+        # 입력 중이 아닐 때: 클릭 위치 확인용 표시
+        self.cursor_var.set(f"클릭  instance {self.current_instance()},  {self._pixel_text(e.x, e.y)}")
+        r = 5
+        self.canvas.delete("probe")
+        self.canvas.create_oval(e.x - r, e.y - r, e.x + r, e.y + r, outline="#00e5ff",
+                                width=2, tags="probe")
 
 
 def _setup_fonts() -> None:
@@ -521,6 +965,9 @@ def main() -> None:
     log(f"엑셀 읽는 중: {config.EXCEL_PATH}")
     try:
         patients = workbook.read_sample_list()
+        store = workbook.LabelStore(patients)
+        problems = store.check_template()
+        store.load()
     except Exception as e:
         root.withdraw()
         log("[오류] 엑셀 읽기 실패\n" + traceback.format_exc())
@@ -531,8 +978,18 @@ def main() -> None:
         messagebox.showerror("환자 목록 없음",
                              "sample_list 시트가 비어 있습니다.\n먼저 step1_make_sample.bat 을 실행하세요.")
         return
-    log(f"환자 {len(patients)}명 읽음. 프로그램 창을 엽니다.")
-    LabelerApp(root, patients)
+    if problems:
+        root.withdraw()
+        log("[오류] 엑셀 양식 문제\n  " + "\n  ".join(problems))
+        messagebox.showerror("엑셀 양식 문제", "기록에 필요한 열을 찾지 못했습니다.\n\n" + "\n".join(problems))
+        return
+    done = sum(r.labeled for r in store.records.values())
+    log(f"환자 {len(patients)}명 읽음 (판독 완료 {done}명). 프로그램 창을 엽니다.")
+    if excel_io.lock_file_exists():
+        messagebox.showwarning("엑셀이 열려 있음",
+                               "엑셀에서 결과 파일이 열려 있는 것 같습니다.\n"
+                               "열려 있으면 저장이 실패하니 엑셀을 닫아 주세요.")
+    LabelerApp(root, patients, store)
     root.mainloop()
     log("프로그램 종료")
 
