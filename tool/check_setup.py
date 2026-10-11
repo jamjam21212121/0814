@@ -62,6 +62,8 @@ def check_paths() -> None:
     out(f"{'[OK]  ' if inside else '[참고]'} 코드 위치: {config.TOOL_DIR}"
         + ("" if inside else "  (프로젝트 폴더 밖이지만 결과물은 프로젝트 폴더에 저장됩니다. "
                              "관리하기 쉽게 연구멘토링\\tool 로 옮기는 것을 권장)"))
+    out(f"[참고] 영상 폴더(train_images) 위치: {config.IMAGES_DIR}"
+        + ("  ← 노트북 밖(USB 등)" if config.PROJECT_DIR not in config.IMAGES_DIR.parents else ""))
     for label, p in [("data 폴더", config.DATA_DIR),
                      ("train_images", config.IMAGES_DIR),
                      ("series CSV", config.SERIES_CSV),

@@ -1545,6 +1545,7 @@ def main() -> None:
         messagebox.showerror("오류", f"{val!r}\n\n자세한 내용은 검은 창을 확인하세요.")
     root.report_callback_exception = on_error
 
+    log(f"영상 폴더: {config.IMAGES_DIR}" + ("" if config.IMAGES_DIR.is_dir() else "  ← 없음! (USB 연결 확인)"))
     log(f"엑셀 읽는 중: {config.EXCEL_PATH}")
     try:
         patients = workbook.read_sample_list()

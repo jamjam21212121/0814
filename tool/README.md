@@ -32,6 +32,16 @@ RSNA 2024 Lumbar Spine 데이터의 Sagittal T2 영상을 보면서 쉬모를 �
 2. **패키지 설치**: `tool\install.bat`을 더블클릭합니다. 끝에 `Successfully installed ...`가
    나오거나 이미 설치돼 있다는 메시지가 나오면 정상입니다.
 
+### 영상(DICOM)을 USB에 두는 경우
+- 엑셀·CSV·캡처·백업·코드는 노트북 `연구멘토링` 폴더에 그대로 두고, **`train_images` 폴더만 USB에** 둡니다.
+  USB 안 구조는 `...\train_images\{study_id}\{series_id}\{instance}.dcm` 그대로여야 합니다.
+- 프로그램은 영상 폴더를 이 순서로 찾습니다:
+  ① `config.py`의 `IMAGES_DIR_OVERRIDE` → ② 노트북 `연구멘토링\data\train_images` → ③ D:~Z: 드라이브의 `train_images`
+  (드라이브 바로 아래 또는 2단계 아래 폴더까지). USB 드라이브 문자가 바뀌어도 자동으로 찾습니다.
+- 노트북에 `data\train_images`가 남아 있으면 그쪽을 먼저 씁니다. USB만 쓰려면 노트북 쪽 폴더를 지우거나 이름을 바꾸세요.
+- `step0_check.bat` 보고서와 라벨링 프로그램 검은 창 첫 줄에 실제로 쓰는 영상 폴더 위치가 나옵니다.
+- 프로그램을 켜기 **전에** USB를 꽂고, 쓰는 동안에는 뽑지 마세요.
+
 ## 단계별 실행
 
 | 단계 | 실행 파일 | 하는 일 | 파일 수정 |

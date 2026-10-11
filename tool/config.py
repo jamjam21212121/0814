@@ -6,7 +6,7 @@
 from pathlib import Path
 
 # 코드 버전 — 실행 화면 맨 위에 표시됩니다. 최신 코드를 받았는지 확인할 때 보세요.
-TOOL_VERSION = "2026-10-14"
+TOOL_VERSION = "2026-10-15"
 
 # ── 폴더 ────────────────────────────────────────────────
 # 모든 입력(데이터)과 결과물(엑셀, 캡처, 백업, 보고서)은 이 폴더 안에서만 읽고 씁니다.
@@ -15,7 +15,57 @@ PROJECT_DIR = Path(r"C:\Users\kay85\OneDrive\바탕 화면\연구멘토링")
 TOOL_DIR = Path(__file__).resolve().parent   # 코드가 있는 곳 (권장: PROJECT_DIR\tool)
 
 DATA_DIR = PROJECT_DIR / "data"
-IMAGES_DIR = DATA_DIR / "train_images"
+
+# ── DICOM 영상 폴더 (train_images) ─────────────────────────
+# 영상을 USB 등 다른 곳에 두었다면, 아래 순서로 찾습니다.
+#   ① IMAGES_DIR_OVERRIDE 에 적은 경로 (예: Path(r"E:\RSNA\train_images"))
+#   ② 노트북의 연구멘토링\data\train_images
+#   ③ D: ~ Z: 드라이브에서 train_images 폴더 (드라이브 바로 아래 또는 2단계 아래 폴더까지)
+# USB 드라이브 문자(E:, F: ...)가 바뀌어도 ③에서 자동으로 찾으므로 보통은 비워 두면 됩니다.
+IMAGES_DIR_OVERRIDE = None
+IMAGES_DIR_NAME = "train_images"
+
+
+def _has_studies(folder: Path) -> bool:
+    """study 폴더(숫자 이름)가 하나라도 있으면 영상 폴더로 인정."""
+    try:
+        return folder.is_dir() and any(p.is_dir() and p.name.isdigit() for p in folder.iterdir())
+    except OSError:
+        return False
+
+
+def find_images_dir(override=None, local=None, roots=None, name=IMAGES_DIR_NAME):
+    """영상 폴더 찾기. 못 찾으면 local 경로를 그대로 돌려줌(없다는 안내가 뜨도록)."""
+    import string
+    import sys
+    local = local or DATA_DIR / name
+    if override and _has_studies(Path(override)):
+        return Path(override)
+    if _has_studies(local):
+        return local
+    if roots is None:
+        roots = [Path(f"{d}:\\") for d in string.ascii_uppercase[3:]] if sys.platform == "win32" else []
+    for root in roots:
+        try:
+            if not root.is_dir():
+                continue
+            candidates = [root / name]
+            for sub in sorted(root.iterdir()):
+                if sub.is_dir() and not sub.name.startswith(("$", ".")) and sub.name != "System Volume Information":
+                    candidates.append(sub / name)
+                    try:
+                        candidates += [s / name for s in sorted(sub.iterdir()) if s.is_dir()]
+                    except OSError:
+                        pass
+        except OSError:
+            continue
+        for c in candidates:
+            if _has_studies(c):
+                return c
+    return Path(override) if override else local
+
+
+IMAGES_DIR = find_images_dir(IMAGES_DIR_OVERRIDE)
 
 
 def _find_csv(name: str) -> Path:
