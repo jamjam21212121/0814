@@ -39,6 +39,7 @@ RSNA 2024 Lumbar Spine 데이터의 Sagittal T2 영상을 보면서 쉬모를 �
 | ⓪ 점검 | `step0_check.bat` | 폴더·CSV·DICOM·엑셀 양식·MicroDicom 위치를 확인하고 보고서를 만듭니다 | 없음 (보고서만 저장) |
 | ① 추출 | `step1_make_sample.bat` | 무작위 100명을 뽑아 `sample_list` 시트에 기록합니다 | 엑셀 (수정 전 자동 백업) |
 | 정리 | `fix_remove_rater.bat` | 엑셀 양식에서 rater 열을 지웁니다 (한 번만) | 엑셀 (수정 전 자동 백업) |
+| 문제 진단 | `diagnose_excel.bat` | "엑셀 읽기 실패"가 날 때 원인과 정상 백업을 찾습니다 | 없음 (보고서만 저장) |
 | ②~⑥ 라벨링 | `run_labeler.bat` | 라벨링 프로그램 (단계마다 기능이 추가됨) | 엑셀·캡처 (④부터) |
 
 엑셀을 수정하는 단계는 **실행 전에 엑셀 파일을 닫아 두세요.** 열려 있으면 저장이 실패하고,
@@ -122,6 +123,7 @@ RSNA 2024 Lumbar Spine 데이터의 Sagittal T2 영상을 보면서 쉬모를 �
 | `check_setup.py` | ⓪ 점검 |
 | `make_sample.py` | ① 100명 추출 |
 | `remove_rater.py` | 엑셀 양식에서 rater 열 지우기 (한 번만) |
+| `diagnose_excel.py` | 엑셀 파일 진단 (읽기 실패 원인, 정상 백업 찾기) |
 | `workbook.py` | 엑셀 양식(sample_list, labels, lesions) 읽기/쓰기 |
 | `imaging.py` | DICOM 시리즈 읽기, 밝기/대비 계산, 캡처 이미지 |
 | `labeler.py` | 라벨링 프로그램 본체 |
