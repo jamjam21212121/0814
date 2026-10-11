@@ -6,7 +6,7 @@
 from pathlib import Path
 
 # 코드 버전 — 실행 화면 맨 위에 표시됩니다. 최신 코드를 받았는지 확인할 때 보세요.
-TOOL_VERSION = "2026-10-13"
+TOOL_VERSION = "2026-10-14"
 
 # ── 폴더 ────────────────────────────────────────────────
 # 모든 입력(데이터)과 결과물(엑셀, 캡처, 백업, 보고서)은 이 폴더 안에서만 읽고 씁니다.
@@ -66,3 +66,9 @@ MICRODICOM_PATH = Path(r"C:\Program Files\MicroDicom\mDicom.exe")
 MICRODICOM_ARGS = ["-fd", "{folder}"]
 AUTO_OPEN_MICRODICOM = True        # 환자를 바꾸면 자동으로 열기 (프로그램 안 체크박스로도 끄고 켤 수 있음)
 MICRODICOM_DELAY_MS = 800          # 환자에 이 시간(ms) 이상 머물러야 열기 (빠르게 넘길 때 창이 쌓이지 않게)
+
+# ── 화면 표시 ─────────────────────────────────────────────
+# 엑셀 status 값은 그대로 두고, 프로그램 화면에만 다른 이름으로 보여 줄 때
+STATUS_DISPLAY = {"애매포함": "확인필요"}
+LEVEL_ZOOM = 3.0                   # Shift+1~5 (레벨로 바로 확대) 때 확대 배율
+LEVEL_ZOOM_ANTERIOR_MM = 12.0      # 확대 중심을 초록점(척추관)에서 앞쪽(척추체 쪽)으로 옮기는 거리(mm)

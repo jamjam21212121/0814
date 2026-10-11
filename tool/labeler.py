@@ -99,8 +99,13 @@ HELP_TEXT = """조작법
 ■ Sagittal T1 보기
   T 키 / [T1 보기] = T2 ↔ T1 전환
   같은 위치의 슬라이스·확대 유지
-  레벨·병변 표시도 T1 위에 표시
-  (병변 기록은 T2 화면에서)
+  레벨·병변 표시도 같은 위치에 표시
+  T1 에서도 병변 기록 가능
+  (엑셀 series_id 에 T1 번호가 들어감)
+
+■ 되돌리기 / 레벨로 확대
+  Ctrl+Z = 마지막 기록 병변 취소
+  Shift+1~5 = L1/L2 ~ L5/S1 확대
 
 ■ 표시 숨기기
   H 키 = 초록점·병변 화살표를
@@ -112,6 +117,28 @@ HELP_TEXT = """조작법
 
 ■ 이 칸 열기/닫기
   F1 키, [조작법 보기] 버튼"""
+
+
+def status_text(status: str) -> str:
+    """화면에 보여 줄 상태 이름 (엑셀 값은 그대로)."""
+    return config.STATUS_DISPLAY.get(status, status)
+
+
+LEVEL_NAMES = ["L1/L2", "L2/L3", "L3/L4", "L4/L5", "L5/S1"]
+SHIFT_DIGITS = {"exclam": 1, "at": 2, "numbersign": 3, "dollar": 4, "percent": 5}
+
+
+def shift_digit(event) -> int | None:
+    """Shift+1~5 → 1~5 (자판 배열·한글 상태와 상관없이)."""
+    if not event.state & 0x0001:
+        return None
+    if event.keysym in SHIFT_DIGITS:
+        return SHIFT_DIGITS[event.keysym]
+    if event.char and event.char in "!@#$%":
+        return "!@#$%".index(event.char) + 1
+    if sys.platform == "win32" and 49 <= event.keycode <= 53:
+        return event.keycode - 48
+    return None
 
 
 def key_letter(event) -> str | None:
@@ -151,6 +178,7 @@ class LabelerApp:
         self.t2_slice_idx = 0                # T1 을 보는 동안 기억해 두는 T2 슬라이스
         self.pending = None                  # 클릭했지만 아직 확정 전인 병변 위치 (x, y, instance)
         self._t1_slice_cache: dict = {}
+        self.undo_stack: list = []           # Ctrl+Z 용: 이번 실행에서 기록한 병변 (study_id, lesion_id)
         self.suggested = False               # 척추·종판이 자동 추천값인지
         self.zoom = 1.0                      # 화면 맞춤 대비 확대 배율 (1 = 화면에 맞춤)
         self.zoom_center: tuple[float, float] | None = None   # 확대 시 화면 가운데에 오는 원본 픽셀 좌표
@@ -214,7 +242,8 @@ class LabelerApp:
         pad = font.measure("00")
         widths = {"no": max(font.measure("번호"), font.measure("100")) + pad,
                   "study": font.measure("0000000000") + pad,
-                  "status": font.measure("애매포함") + pad}
+                  "status": max(font.measure(status_text(s)) for s in
+                                (config.STATUS_TODO, config.STATUS_DONE, config.STATUS_UNCERTAIN)) + pad}
         self.tree = ttk.Treeview(box, columns=("no", "study", "status"), show="headings",
                                  selectmode="browse", height=10)
         for col, text in [("no", "번호"), ("study", "study_id"), ("status", "상태")]:
@@ -224,7 +253,7 @@ class LabelerApp:
             self.tree.tag_configure(status, background=color)
         for i, p in enumerate(self.patients):
             status = self.record_of(i).status()
-            self.tree.insert("", "end", iid=str(i), values=(p.sample_no or i + 1, p.study_id, status),
+            self.tree.insert("", "end", iid=str(i), values=(p.sample_no or i + 1, p.study_id, status_text(status)),
                              tags=(status,))
         sb = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
@@ -389,6 +418,7 @@ class LabelerApp:
                    "<F1>": self.toggle_help, "<F2>": self.toggle_levels,
                    "<Home>": self.go_to_label_slice, "<Escape>": self.end_lesion,
                    "<Return>": self.confirm_pending, "<KP_Enter>": self.confirm_pending,
+                   "<Control-z>": self.undo_last, "<Control-Z>": self.undo_last,
                    "<Delete>": self.delete_lesion, "<Control-s>": self.retry_save,
                    "<Control-S>": self.retry_save}
         for seq, fn in actions.items():
@@ -405,6 +435,14 @@ class LabelerApp:
         add(self.root)
 
     def _on_key(self, event):
+        if event.state & 0x0004 and (event.keysym.lower() == "z" or event.char == "\x1a"
+                                     or (sys.platform == "win32" and event.keycode == 90)):
+            self.undo_last()                       # 한글 상태의 Ctrl+Z 도 처리
+            return "break"
+        n = shift_digit(event)
+        if n is not None:
+            self.zoom_to_level(n)
+            return "break"
         k = key_letter(event)
         if k is None:
             return None
@@ -687,7 +725,7 @@ class LabelerApp:
             self.hint_var.set("척추(1~6)와 종판(U/D)을 고른 뒤 Enter를 누르세요.")
             self.root.bell()
             return
-        x, y, inst = self.pending
+        x, y, inst, _ = self.pending
         self.pending = None
         self.add_lesion(x, y, inst)
 
@@ -720,15 +758,17 @@ class LabelerApp:
         rec = self.record
         v, e = self.vertebra_var.get(), self.endplate_var.get()
         instance = self.current_instance() if instance is None else instance
+        series_id = p.t1_series if self.view_kind == "T1" else p.t2_series   # 지금 보는 시리즈 기준
         les = workbook.Lesion(lesion_id=self.store.new_lesion_id(p.study_id), study_id=p.study_id,
-                              series_id=p.t2_series, instance=instance, vertebra=v,
+                              series_id=series_id, instance=instance, vertebra=v,
                               endplate=e, x=x, y=y, label=self.mode, labeled_at=workbook.now_text())
         if self.mode == UNCERTAIN:
             les.capture_file = self._save_capture(les, rec)
         rec.lesions.append(les)
         rec.labeled = True
         rec.labeled_at = les.labeled_at
-        log(f"  병변 기록: {les.lesion_id} {v} {e} {les.label} instance {les.instance} "
+        self.undo_stack.append((p.study_id, les.lesion_id))
+        log(f"  병변 기록 ({self.view_kind}): {les.lesion_id} {v} {e} {les.label} instance {les.instance} "
             f"x={x:.1f} y={y:.1f}" + (f" 캡처 {les.capture_file}" if les.capture_file else ""))
         self.vertebra_var.set("")                  # 다음 병변은 척추·종판을 새로 고르도록
         self.endplate_var.set("")
@@ -752,12 +792,18 @@ class LabelerApp:
             name = self._capture_name(les, rec)
             level, width = imaging.adjusted_window(self.level0, self.width0,
                                                    self.bright.get(), self.contrast.get())
-            title = (f"study {les.study_id} | {les.vertebra} {les.endplate} | Uncertain | "
+            kind = self.view_kind
+            title = (f"study {les.study_id} | Sagittal {kind} | {les.vertebra} {les.endplate} | Uncertain | "
                      f"instance {les.instance} | x={les.x:.1f}, y={les.y:.1f}")
-            idx = self.series_t2.index_of_instance(les.instance)
-            img = imaging.make_capture(self.series_t2.get(self.slice_idx if idx is None else idx),
-                                       level, width, (les.x, les.y),
-                                       title, self.coords, les.instance)
+            series = self.series_of(kind)
+            idx = series.index_of_instance(les.instance)
+            levels = []                            # 레벨 표시도 이 시리즈 좌표로
+            for c in self.coords:
+                m = self.map_between("T2", c["x"], c["y"], c["instance"], kind)
+                if m:
+                    levels.append({"x": m[0], "y": m[1], "instance": m[3], "level": c["level"]})
+            img = imaging.make_capture(series.get(self.slice_idx if idx is None else idx),
+                                       level, width, (les.x, les.y), title, levels, les.instance)
             img.save(config.CAPTURE_DIR / name)
             return name
         except Exception as e:
@@ -800,6 +846,9 @@ class LabelerApp:
             return
         if not messagebox.askyesno("병변 삭제", f"{self._lesion_text(les)}\n이 병변을 지울까요?"):
             return
+        self._remove_lesion(les)
+
+    def _remove_lesion(self, les: workbook.Lesion) -> None:
         rec = self.record
         rec.lesions.remove(les)
         self._remove_capture(les)
@@ -814,11 +863,40 @@ class LabelerApp:
             rec.labeled_at = workbook.now_text()
         self.commit()
 
+    def undo_last(self) -> None:
+        """Ctrl+Z: 확정 전 클릭이 있으면 그것을, 없으면 이번 실행에서 마지막으로 기록한 병변을 취소."""
+        if self.pending is not None:
+            self.end_lesion()
+            return
+        while self.undo_stack:
+            sid, lid = self.undo_stack.pop()
+            les = next((x for x in self.store.records[sid].lesions if x.lesion_id == lid), None)
+            if les is not None:
+                break
+        else:
+            self.hint_var.set("되돌릴 병변이 없습니다. (이번 실행에서 기록한 병변만 되돌릴 수 있어요)")
+            self.root.bell()
+            return
+        index = next(i for i, p in enumerate(self.patients) if p.study_id == sid)
+        if index != self.current:
+            self.load_patient(index)               # 다른 환자면 그 환자로 가서 취소
+        blocked = self._human_input_of([les])
+        if blocked:
+            self.undo_stack.append((sid, lid))
+            messagebox.showwarning("되돌릴 수 없음", "교수님 입력이 있는 병변이라 되돌릴 수 없습니다.\n\n"
+                                   + "\n".join(blocked))
+            return
+        text = self._lesion_text(les)
+        self._remove_lesion(les)
+        if self.record.lesions:
+            self.hint_var.set(f"되돌림: {text}  (Ctrl+Z 를 또 누르면 그 전 것)")
+        log(f"  되돌림(Ctrl+Z): {lid}")
+
     def go_to_lesion(self) -> None:
         les = self.selected_lesion()
         if les is None or not self.series:
             return
-        if self.view_kind == "T1":                 # 병변은 T2 기준이므로 T2 로 돌아가서 이동
+        if self.lesion_kind(les) != self.view_kind:  # 병변을 찍은 시리즈(T1/T2)로 바꿔서 이동
             self.toggle_t1()
         idx = self.series.index_of_instance(les.instance)
         if idx is not None:
@@ -827,7 +905,8 @@ class LabelerApp:
 
     def _lesion_text(self, les: workbook.Lesion) -> str:
         num = les.lesion_id.rsplit("_", 1)[-1]
-        return f"#{num} {les.vertebra} {ENDPLATE_KO.get(les.endplate, les.endplate)} " \
+        t1 = " [T1]" if self.current is not None and self.lesion_kind(les) == "T1" else ""
+        return f"#{num} {les.vertebra} {ENDPLATE_KO.get(les.endplate, les.endplate)}{t1} " \
                f"{LABEL_KO.get(les.label, les.label)}  inst {les.instance}"
 
     # ── 저장 ──────────────────────────────────────────────
@@ -895,7 +974,8 @@ class LabelerApp:
     def refresh_patient_row(self, index: int) -> None:
         p = self.patients[index]
         status = self.record_of(index).status()
-        self.tree.item(str(index), values=(p.sample_no or index + 1, p.study_id, status), tags=(status,))
+        self.tree.item(str(index), values=(p.sample_no or index + 1, p.study_id, status_text(status)),
+                       tags=(status,))
 
     def refresh_panel(self) -> None:
         rec = self.record
@@ -904,8 +984,8 @@ class LabelerApp:
         status = rec.status()
         detail = {config.STATUS_TODO: "아직 판독 전",
                   config.STATUS_DONE: "정상" if not rec.lesions else f"병변 {len(rec.lesions)}개",
-                  config.STATUS_UNCERTAIN: f"병변 {len(rec.lesions)}개 (애매 포함)"}[status]
-        self.patient_status_var.set(f"현재 환자: {status}  ·  {detail}")
+                  config.STATUS_UNCERTAIN: f"병변 {len(rec.lesions)}개 (애매 병변 있음)"}[status]
+        self.patient_status_var.set(f"현재 환자: {status_text(status)}  ·  {detail}")
         if self.mode is None:
             self.mode_var.set("꺼짐 (S 또는 A를 누르세요)")
         else:
@@ -975,27 +1055,57 @@ class LabelerApp:
                                     font=self._level_font, tags=tags)
         self.canvas.create_text(x, y, text=text, anchor=anchor, fill=color, font=self._level_font, tags=tags)
 
-    def map_t2_point(self, x: float, y: float, instance: int):
+    def ensure_t1(self) -> imaging.SeriesData | None:
+        """현재 환자의 Sagittal T1 시리즈 (영상은 볼 때만 읽음). 없으면 None."""
+        if self.series_t1 is None and self.current is not None:
+            p = self.patients[self.current]
+            if p.t1_series:
+                self.series_t1 = imaging.SeriesData(dataset.series_dir(p.study_id, p.t1_series))
+        return self.series_t1 if self.series_t1 is not None and len(self.series_t1) else None
+
+    def series_of(self, kind: str) -> imaging.SeriesData | None:
+        return self.series_t2 if kind == "T2" else self.ensure_t1()
+
+    def lesion_kind(self, les: workbook.Lesion) -> str:
+        p = self.patients[self.current]
+        return "T1" if p.t1_series and les.series_id == p.t1_series else "T2"
+
+    def map_between(self, src_kind: str, x: float, y: float, instance: int, dst_kind: str):
         """
-        T2 픽셀 좌표를 지금 보는 화면의 픽셀 좌표로.
-        반환 (x, y, 같은 슬라이스인지, 그 점이 있는 슬라이스의 instance) — T1 위치를 못 구하면 None.
+        src 시리즈의 픽셀 (x, y, instance) → dst 시리즈에서 같은 몸 위치의 (x, y, 슬라이스 번호, instance).
+        위치 정보가 없으면 None.
         """
-        if self.view_kind == "T2":
-            return x, y, instance == self.current_instance(), instance
-        i2 = self.series_t2.index_of_instance(instance)
-        g2 = self.series_t2.geometry(i2) if i2 is not None else None
+        src, dst = self.series_of(src_kind), self.series_of(dst_kind)
+        if src is None or dst is None:
+            return None
+        if src_kind == dst_kind:
+            i = src.index_of_instance(instance)
+            return (x, y, i, instance) if i is not None else None
+        i = src.index_of_instance(instance)
+        g = src.geometry(i) if i is not None else None
+        if g is None:
+            return None
+        p = imaging.pixel_to_patient(g, x, y)
+        key = (src_kind, dst_kind, instance, round(x), round(y))
+        if key not in self._t1_slice_cache:
+            self._t1_slice_cache[key] = imaging.nearest_slice(dst, p)
+        j = self._t1_slice_cache[key]
+        g2 = dst.geometry(j) if j is not None else None
         if g2 is None:
             return None
-        p = imaging.pixel_to_patient(g2, x, y)
-        key = (instance, round(x), round(y))
-        if key not in self._t1_slice_cache:
-            self._t1_slice_cache[key] = imaging.nearest_slice(self.series_t1, p)
-        j = self._t1_slice_cache[key]
-        g1 = self.series_t1.geometry(j) if j is not None else None
-        if g1 is None:
+        x2, y2 = imaging.patient_to_pixel(g2, p)
+        return x2, y2, j, dst.instances[j]
+
+    def map_point(self, kind: str, x: float, y: float, instance: int):
+        """kind 시리즈의 점을 지금 화면 좌표로. 반환 (x, y, 같은 슬라이스인지, 그 슬라이스의 instance) 또는 None."""
+        m = self.map_between(kind, x, y, instance, self.view_kind)
+        if m is None:
             return None
-        x1, y1 = imaging.patient_to_pixel(g1, p)
-        return x1, y1, j == self.slice_idx, self.series_t1.instances[j]
+        x2, y2, j, inst = m
+        return x2, y2, j == self.slice_idx, inst
+
+    def map_t2_point(self, x: float, y: float, instance: int):
+        return self.map_point("T2", x, y, instance)
 
     def draw_levels(self) -> None:
         """
@@ -1047,7 +1157,7 @@ class LabelerApp:
             return
         selected = self.selected_lesion()
         for les in rec.lesions:
-            m = self.map_t2_point(les.x, les.y, les.instance)
+            m = self.map_point(self.lesion_kind(les), les.x, les.y, les.instance)
             if m is None:
                 continue
             x, y, same, inst = m
@@ -1059,8 +1169,8 @@ class LabelerApp:
                 self._arrow(cx, cy, color, 4 if les is selected else 2, False, short, "lesion")
             else:
                 self._arrow(cx, cy, color, 1, True, f"{short} (inst {inst})", "lesion")
-        if self.pending is not None and self.view_kind == "T2":
-            x, y, inst = self.pending
+        if self.pending is not None and self.pending[3] == self.view_kind:
+            x, y, inst, _ = self.pending
             cx, cy = self.pixel_to_canvas(x, y)
             v, e = self.vertebra_var.get(), self.endplate_var.get()
             label = f"{v}{'상' if e == 'superior' else '하'}? (Enter)" if v and e else "? (Enter)"
@@ -1093,10 +1203,9 @@ class LabelerApp:
             if not p.t1_series:
                 self.hint_var.set("이 환자는 Sagittal T1 시리즈 정보가 없습니다.")
                 return
-            if self.series_t1 is None:
-                self.series_t1 = imaging.SeriesData(dataset.series_dir(p.study_id, p.t1_series))
-            if not len(self.series_t1):
-                self.hint_var.set(f"Sagittal T1 영상 파일이 없습니다.\n{self.series_t1.folder}")
+            if self.ensure_t1() is None:
+                self.hint_var.set("Sagittal T1 영상 파일이 없습니다.\n"
+                                  f"{dataset.series_dir(p.study_id, p.t1_series)}")
                 return
             self.t2_slice_idx = self.slice_idx
             src, dst, kind = self.series_t2, self.series_t1, "T1"
@@ -1137,7 +1246,7 @@ class LabelerApp:
         self._syncing = False
         self.t1_button.configure(text="T2 보기 (T)" if kind == "T1" else "T1 보기 (T)")
         self.title_var.set(f"[{self.current + 1}/{len(self.patients)}] study {p.study_id}"
-                           + ("  ·  T1 (기록은 T2에서)" if kind == "T1" else ""))
+                           + ("  ·  Sagittal T1" if kind == "T1" else ""))
         log(f"  {kind} 보기: instance {dst.instances[j]}")
         self.refresh_panel()
         self.render()
@@ -1199,6 +1308,33 @@ class LabelerApp:
         if self.zoom == 1.0:
             self.zoom_center = None
         self.render()
+
+    def zoom_to_level(self, n: int) -> None:
+        """Shift+1~5: L1/L2 ~ L5/S1 디스크 부위로 이동해 확대 (초록점에서 조금 앞쪽, 척추체·종판 쪽이 가운데)."""
+        name = LEVEL_NAMES[n - 1]
+        c = next((p for p in self.coords if p["level"] == name), None)
+        if c is None or not self.series or self.message:
+            self.hint_var.set(f"{name} 레벨 좌표가 없어 바로 확대할 수 없습니다.")
+            return
+        m = self.map_between("T2", c["x"], c["y"], c["instance"], self.view_kind)
+        if m is None:
+            self.hint_var.set(f"{name} 위치를 이 시리즈에서 찾지 못했습니다.")
+            return
+        x, y, j, _ = m
+        self.step_slice(j - self.slice_idx)
+        g = self.series.geometry(j)
+        mm = config.LEVEL_ZOOM_ANTERIOR_MM
+        if g is not None:                          # 환자 앞쪽(-Y) 방향으로 mm 만큼
+            x += -mm * g["row"][1] / g["ps"][1]
+            y += -mm * g["col"][1] / g["ps"][0]
+        else:
+            x -= self.series.get(j).shape[1] * 0.05
+        if not self.view:
+            self.render()
+        self.zoom = config.LEVEL_ZOOM
+        self.zoom_center = (x, y)
+        self.render()
+        self.cursor_var.set(f"{name} 확대 (Shift+1~5 = 다른 레벨, 0 = 원래 크기)")
 
     def reset_zoom(self) -> None:
         self.zoom, self.zoom_center = 1.0, None
@@ -1355,17 +1491,14 @@ class LabelerApp:
         if pos is None or self.message:
             return
         if self.mode is not None:
-            if self.view_kind != "T2":
-                self.hint_var.set("병변 기록은 T2 화면에서 합니다. T 키로 T2로 돌아가세요.")
-                self.root.bell()
-                return
             chosen = self.vertebra_var.get() and self.endplate_var.get() and not self.suggested
             if chosen and self.pending is None:
                 self.add_lesion(*pos)                  # 직접 고른 뒤 클릭 → 바로 기록
                 return
-            self.pending = (pos[0], pos[1], self.current_instance())
-            if not chosen:                             # 자동 추천
-                sug = self.suggest_endplate(*pos)
+            self.pending = (pos[0], pos[1], self.current_instance(), self.view_kind)
+            if not chosen:                             # 자동 추천 (T1 이면 같은 위치의 T2 좌표로 계산)
+                m = self.map_between(self.view_kind, pos[0], pos[1], self.current_instance(), "T2")
+                sug = self.suggest_endplate(m[0], m[1]) if m else None
                 if sug:
                     self.vertebra_var.set(sug[0])
                     self.endplate_var.set(sug[1])
