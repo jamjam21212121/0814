@@ -3,8 +3,9 @@
 LumbarDISC 쉬모를 결절 라벨링 프로그램
   ② 이미지 창과 슬라이스 넘기기
   ③ 레벨 위치 표시 (train_label_coordinates.csv)
-  ④ 분류 입력과 엑셀 기록  ← 지금 단계
-  (⑤ 이어하기, ⑥ MicroDicom 열기는 다음 단계에서 추가)
+  ④ 분류 입력과 엑셀 기록 (입력할 때마다 즉시 저장)
+  ⑤ 이어하기: 마지막으로 보던 환자·슬라이스부터 다시 시작  ← 지금 단계
+  (⑥ MicroDicom 열기는 다음 단계에서 추가)
 
 실행: run_labeler.bat 더블클릭
 
@@ -18,6 +19,8 @@ LumbarDISC 쉬모를 결절 라벨링 프로그램
 """
 from __future__ import annotations
 
+import json
+import os
 import sys
 import time
 import tkinter as tk
@@ -112,6 +115,7 @@ class LabelerApp:
         self.message: str | None = None      # 영상 대신 보여 줄 안내/오류 문구
         self.coords: list[dict] = []         # 현재 환자의 레벨 좌표 (train_label_coordinates.csv)
         self.mode: str | None = None         # 병변 입력 중이면 SCHMORL 또는 UNCERTAIN
+        self._resume_instance: int | None = None
         self._photo = None
         self._drag = None
         self._syncing = False
@@ -119,8 +123,7 @@ class LabelerApp:
         self._build_ui()
         self._bind_keys()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
-        start = next((i for i, p in enumerate(patients)
-                      if self.record_of(i).status() == config.STATUS_TODO), 0)
+        start, self._resume_instance = self._resume_position()
         self.root.after(50, lambda: self.load_patient(start))
 
     # ── 화면 구성 ─────────────────────────────────────────
@@ -361,6 +364,37 @@ class LabelerApp:
             self.help_frame.pack(side="right", fill="y", before=self.center_frame)
             self.help_button.configure(text="조작법 닫기 (F1)")
 
+    # ── ⑤ 이어하기 ───────────────────────────────────────
+    def _resume_position(self) -> tuple[int, int | None]:
+        """지난번 마지막 환자·슬라이스. 기록이 없으면 첫 '미완료' 환자."""
+        first_todo = next((i for i in range(len(self.patients))
+                           if self.record_of(i).status() == config.STATUS_TODO), 0)
+        try:
+            state = json.loads(config.STATE_PATH.read_text(encoding="utf-8"))
+            sid = str(state.get("study_id", ""))
+            index = next(i for i, p in enumerate(self.patients) if p.study_id == sid)
+        except (OSError, ValueError, StopIteration, AttributeError):
+            log(f"이어하기 기록 없음 → 첫 미완료 환자({first_todo + 1}번)부터 시작")
+            return first_todo, None
+        log(f"이어하기: 지난번 마지막 환자 {index + 1}번 (study {sid}, instance {state.get('instance')}) "
+            f"— {state.get('saved_at', '')}")
+        return index, state.get("instance")
+
+    def save_state(self) -> None:
+        """현재 환자·슬라이스를 기록 (임시 파일에 쓴 뒤 교체해서 파일이 깨지지 않게)."""
+        if self.current is None:
+            return
+        state = {"study_id": self.patients[self.current].study_id,
+                 "patient_no": self.current + 1,
+                 "instance": self.current_instance(),
+                 "saved_at": workbook.now_text()}
+        try:
+            tmp = config.STATE_PATH.with_suffix(".tmp")
+            tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp, config.STATE_PATH)
+        except OSError:
+            log("[경고] 이어하기 위치 저장 실패\n" + traceback.format_exc())
+
     # ── 환자 ──────────────────────────────────────────────
     def record_of(self, index: int) -> workbook.Record:
         return self.store.records[self.patients[index].study_id]
@@ -418,8 +452,13 @@ class LabelerApp:
             self.coords = []
             log("  → 좌표 CSV 읽기 실패\n" + traceback.format_exc())
         label_idx = self.label_slice_index()
-        # 레벨 좌표를 찍은 슬라이스부터, 없으면 가운데 슬라이스부터
+        # 레벨 좌표를 찍은 슬라이스부터, 없으면 가운데 슬라이스부터 (이어하기면 지난번 슬라이스)
         self.slice_idx = label_idx if label_idx is not None else len(series) // 2
+        if self._resume_instance is not None:
+            resume_idx = series.index_of_instance(self._resume_instance)
+            if resume_idx is not None:
+                self.slice_idx = resume_idx
+            self._resume_instance = None
         try:
             self.level0, self.width0 = imaging.auto_window(series.get(self.slice_idx))
         except Exception as e:
@@ -435,6 +474,7 @@ class LabelerApp:
         self.slice_scale.set(self.slice_idx)
         self._syncing = False
         self.render()
+        self.save_state()
 
     # ── ④ 판독 입력 ───────────────────────────────────────
     def press_normal(self) -> None:
@@ -615,6 +655,7 @@ class LabelerApp:
         """현재 환자 결과를 바로 엑셀에 저장하고 화면을 갱신."""
         self.store.dirty.add(self.patients[self.current].study_id)
         self.save()
+        self.save_state()
         self.refresh_panel()
         self.refresh_patient_row(self.current)
         self.render()
@@ -667,6 +708,7 @@ class LabelerApp:
                 self.store.save()
             except Exception:
                 log("[저장 실패]\n" + traceback.format_exc())
+        self.save_state()
         self.root.destroy()
 
     # ── 화면 갱신 ─────────────────────────────────────────
@@ -735,20 +777,35 @@ class LabelerApp:
         self.canvas.create_text(x, y, text=text, anchor=anchor, fill=color, font=self._level_font, tags=tags)
 
     def draw_levels(self) -> None:
-        """L1/L2 ~ L5/S1 위치에 표시. 좌표를 찍은 슬라이스는 진하게, 다른 슬라이스는 흐리게."""
+        """
+        L1/L2 ~ L5/S1 위치 표시. 점은 원래 좌표에 두고, 글자는 오른쪽으로 떨어진 곳에 한 줄로 모아
+        점과 선으로 이어 줍니다 (글자가 종판 경계를 가리지 않도록).
+        좌표를 찍은 슬라이스는 진하게, 다른 슬라이스는 흐리게.
+        """
         c = self.canvas
         inst = self.current_instance()
+        points = []
         for p in self.coords:
-            if not (0 <= p["x"] < self.view["w"] and 0 <= p["y"] < self.view["h"]):
-                continue
-            cx, cy = self.pixel_to_canvas(p["x"], p["y"])
-            same = p["instance"] == inst
+            if 0 <= p["x"] < self.view["w"] and 0 <= p["y"] < self.view["h"]:
+                cx, cy = self.pixel_to_canvas(p["x"], p["y"])
+                same = p["instance"] == inst
+                text = p["level"] if same else f'{p["level"]} (inst {p["instance"]})'
+                points.append((cx, cy, same, text))
+        if not points:
+            return
+        img_w = self.view["w"] * self.view["sx"]
+        label_x = max(pt[0] for pt in points) + max(60, img_w * 0.15)        # 글자를 쓸 세로줄
+        widest = max(self._level_font.measure(pt[3]) for pt in points)
+        label_x = min(label_x, c.winfo_width() - widest - 8)                  # 화면 밖으로 안 나가게
+        for cx, cy, same, text in points:
             color = LEVEL_COLOR if same else LEVEL_COLOR_DIM
             r = 5 if same else 4
             c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=2,
                           fill=color if same else "", tags="level")
-            text = p["level"] if same else f'{p["level"]} (inst {p["instance"]})'
-            self._outlined_text(cx - 10, cy, text, color, "e", "level")
+            if label_x > cx + r + 10:
+                c.create_line(cx + r, cy, label_x - 3, cy, fill=color, width=1,
+                              dash=() if same else (3, 3), tags="level")
+            self._outlined_text(max(label_x, cx + r + 10), cy, text, color, "w", "level")
 
     def draw_lesions(self) -> None:
         """기록된 병변: 같은 슬라이스면 진한 원 + 번호, 다른 슬라이스면 점선 원 (inst 표시)."""

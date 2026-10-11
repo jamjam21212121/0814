@@ -117,11 +117,19 @@ def make_capture(arr: np.ndarray, level: float, width: float, lesion: tuple[floa
     to_img = lambda x, y: ((x + 0.5) * s - 0.5, (y + 0.5) * s - 0.5)
     small = _font(max(12, img.width // 45))
 
-    for p in levels:                                  # 레벨 위치 (같은 슬라이스면 진하게)
-        cx, cy = to_img(p["x"], p["y"])
-        color = (124, 252, 0) if p["instance"] == instance else (95, 158, 95)
-        draw.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], outline=color, width=2)
-        draw.text((cx - 8, cy), p["level"], fill=color, font=small, anchor="rm", stroke_width=2, stroke_fill="black")
+    # 레벨 위치: 점은 원래 자리, 글자는 오른쪽으로 떨어진 곳에 모아 선으로 연결 (같은 슬라이스면 진하게)
+    pts = [(*to_img(p["x"], p["y"]), p) for p in levels if 0 <= p["x"] < w and 0 <= p["y"] < h]
+    if pts:
+        label_x = max(x for x, _, _ in pts) + max(40, img.width * 0.15)
+        widest = max(draw.textlength(p["level"], font=small) for _, _, p in pts)
+        label_x = min(label_x, img.width - widest - 6)
+        for cx, cy, p in pts:
+            color = (124, 252, 0) if p["instance"] == instance else (95, 158, 95)
+            draw.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], outline=color, width=2)
+            tx = max(label_x, cx + 14)
+            if tx > cx + 14:
+                draw.line([cx + 4, cy, tx - 3, cy], fill=color, width=1)
+            draw.text((tx, cy), p["level"], fill=color, font=small, anchor="lm", stroke_width=2, stroke_fill="black")
 
     cx, cy = to_img(*lesion)                          # 병변 위치
     r = max(10, img.width // 40)
