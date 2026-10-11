@@ -1028,7 +1028,9 @@ def main() -> None:
     except Exception as e:
         root.withdraw()
         log("[오류] 엑셀 읽기 실패\n" + traceback.format_exc())
-        messagebox.showerror("엑셀 읽기 실패", f"{config.EXCEL_PATH}\n\n{e}")
+        messagebox.showerror("엑셀 읽기 실패", f"{config.EXCEL_PATH}\n\n{e}\n\n"
+                             "tool 폴더의 diagnose_excel.bat 을 실행하면 원인과\n"
+                             "정상적으로 열리는 백업(labeling\\backup)을 알려 줍니다.")
         return
     if not patients:
         root.withdraw()

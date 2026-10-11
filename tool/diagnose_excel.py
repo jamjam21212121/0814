@@ -45,23 +45,26 @@ def inspect_zip(path: Path) -> None:
         return
     names = z.namelist()
     out(f"  내부 파일 {len(names)}개")
+    head = z.read("xl/workbook.xml")[:300].decode("utf-8", "replace")
+    if re.search(r"<\w+:workbook", head):
+        out("  [참고] XML에 접두사(x: 등)가 붙어 있습니다 → Excel이 아닌 다른 프로그램/웹에서 저장된 파일로 보입니다.")
     app = z.read("docProps/app.xml").decode("utf-8", "replace") if "docProps/app.xml" in names else ""
-    m = re.search(r"<Application>(.*?)</Application>", app)
+    m = re.search(r"<(?:\w+:)?Application>(.*?)</(?:\w+:)?Application>", app)
     out(f"  마지막으로 저장한 프로그램: {m.group(1) if m else '(기록 없음)'}")
-    m = re.search(r"<AppVersion>(.*?)</AppVersion>", app)
+    m = re.search(r"<(?:\w+:)?AppVersion>(.*?)</(?:\w+:)?AppVersion>", app)
     if m:
         out(f"  프로그램 버전: {m.group(1)}")
 
     styles = z.read("xl/styles.xml").decode("utf-8", "replace") if "xl/styles.xml" in names else ""
-    xfs = re.search(r"<cellXfs[^>]*>(.*?)</cellXfs>", styles, re.S)
-    n_xf = len(re.findall(r"<xf[ >/]", xfs.group(1))) if xfs else 0
-    m = re.search(r"<cellXfs[^>]*count=\"(\d+)\"", styles)
+    xfs = re.search(r"<(?:\w+:)?cellXfs[^>]*>(.*?)</(?:\w+:)?cellXfs>", styles, re.S)
+    n_xf = len(re.findall(r"<(?:\w+:)?xf[ >/]", xfs.group(1))) if xfs else 0
+    m = re.search(r"<(?:\w+:)?cellXfs[^>]*count=\"(\d+)\"", styles)
     out(f"  셀 스타일(cellXfs): 선언 {m.group(1) if m else '-'}개, 실제 {n_xf}개")
 
     wb_xml = z.read("xl/workbook.xml").decode("utf-8", "replace")
-    sheets = re.findall(r"<sheet [^>]*name=\"([^\"]+)\"", wb_xml)
+    sheets = re.findall(r"<(?:\w+:)?sheet [^>]*name=\"([^\"]+)\"", wb_xml)
     out(f"  시트: {sheets}")
-    for dn in re.findall(r"<definedName[^>]*>.*?</definedName>", wb_xml, re.S):
+    for dn in re.findall(r"<(?:\w+:)?definedName[^>]*>.*?</(?:\w+:)?definedName>", wb_xml, re.S):
         out(f"  이름 정의: {dn[:160]}")
         lid = re.search(r"localSheetId=\"(\d+)\"", dn)
         if lid and int(lid.group(1)) >= len(sheets):
@@ -69,10 +72,10 @@ def inspect_zip(path: Path) -> None:
 
     for name in sorted(n for n in names if n.startswith("xl/worksheets/sheet")):
         xml = z.read(name).decode("utf-8", "replace")
-        used = [int(s) for s in re.findall(r"<c [^>]*\bs=\"(\d+)\"", xml)]
-        used += [int(s) for s in re.findall(r"<(?:row|col) [^>]*\bs=\"(\d+)\"", xml)]
+        used = [int(s) for s in re.findall(r"<(?:\w+:)?c [^>]*\bs=\"(\d+)\"", xml)]
+        used += [int(s) for s in re.findall(r"<(?:\w+:)?(?:row|col) [^>]*\bs=\"(\d+)\"", xml)]
         bad = sorted({s for s in used if s >= n_xf})
-        out(f"  {name}: 셀 {xml.count('<c ')}개, 스타일 번호 최대 {max(used) if used else '-'}"
+        out(f"  {name}: 셀 {len(re.findall(r'<(?:\w+:)?c ', xml))}개, 스타일 번호 최대 {max(used) if used else '-'}"
             f" (스타일 {n_xf}개)" + (f"  [문제] 없는 스타일 번호 {bad[:10]}" if bad else ""))
 
 
