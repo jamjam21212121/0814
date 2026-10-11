@@ -6,6 +6,7 @@ LumbarDISC 쉬모를 결절 라벨링 프로그램
   ④ 분류 입력과 엑셀 기록 (입력할 때마다 즉시 저장)
   ⑤ 이어하기: 마지막으로 보던 환자·슬라이스부터 다시 시작
   ⑥ MicroDicom 자동 열기: 환자를 바꾸면 그 환자의 Sagittal T2 를 MicroDicom 으로 엶 (M 키)
+  + 확대(Ctrl+휠), Sagittal T1 전환(T), 레벨 자동 추천(클릭 → Enter), 표시 숨기기(H)
 
 실행: run_labeler.bat 더블클릭
 
@@ -47,21 +48,25 @@ def log(text: str) -> None:
 LEVEL_COLOR = "#7CFC00"        # 라벨 좌표를 찍은 슬라이스: 밝은 연두
 LEVEL_COLOR_DIM = "#5f9e5f"    # 다른 슬라이스: 흐린 초록 (위치 참고용)
 LESION_COLOR = {SCHMORL: "#ff4040", UNCERTAIN: "#ffa020"}     # 쉬모를=빨강, 애매=주황
+PENDING_COLOR = "#ffffff"      # 클릭했지만 아직 확정 전인 위치
 LABEL_KO = {SCHMORL: "쉬모를", UNCERTAIN: "애매"}
 ENDPLATE_KO = {"superior": "상종판", "inferior": "하종판"}
 STATUS_COLORS = {config.STATUS_DONE: "#d6f0d6", config.STATUS_UNCERTAIN: "#ffe2b0"}
 # 한글 입력 상태에서 눌린 키 → 영문 키 (두벌식 자판 기준)
-HANGUL_TO_KEY = {"ㅜ": "n", "ㄴ": "s", "ㅁ": "a", "ㅕ": "u", "ㅇ": "d", "ㅡ": "m"}
+HANGUL_TO_KEY = {"ㅜ": "n", "ㄴ": "s", "ㅁ": "a", "ㅕ": "u", "ㅇ": "d", "ㅡ": "m", "ㅅ": "t", "ㅗ": "h"}
 
 HELP_TEXT = """조작법
 
 ■ 판독 입력 (오른쪽 칸)
   N = 정상 → 다음 환자로
   S = 쉬모를 결절, A = 애매
-   ① 척추 1~6 (L1~L5, S1)
-   ② 종판 U=상종판, D=하종판
-   ③ 영상에서 병변 클릭
-  병변이 여러 개면 ①~③ 반복
+  [빠른 방법] 병변 클릭
+   → 척추·종판 자동 추천
+   → 맞으면 Enter (틀리면 1~6,
+     U/D 로 고친 뒤 Enter)
+  [직접 고르기] 척추 1~6 →
+   종판 U/D → 병변 클릭 (바로 기록)
+  병변이 여러 개면 반복
   Esc = 병변 입력 끝내기
   Del = 고른 병변 삭제
   Ctrl+S = 저장 다시 시도
@@ -90,6 +95,16 @@ HELP_TEXT = """조작법
   환자를 바꾸면 자동으로 열림
   M 키 / 버튼 = 지금 환자 다시 열기
   [자동 열기] 체크로 끄고 켬
+
+■ Sagittal T1 보기
+  T 키 / [T1 보기] = T2 ↔ T1 전환
+  같은 위치의 슬라이스·확대 유지
+  레벨·병변 표시도 T1 위에 표시
+  (병변 기록은 T2 화면에서)
+
+■ 표시 숨기기
+  H 키 = 초록점·병변 화살표를
+  숨겼다 다시 보기
 
 ■ 레벨 표시 (L1/L2 ~ L5/S1)
   F2 키, [레벨 표시] 체크
@@ -130,6 +145,13 @@ class LabelerApp:
         self.mode: str | None = None         # 병변 입력 중이면 SCHMORL 또는 UNCERTAIN
         self._resume_instance: int | None = None
         self.mdicom = microdicom.MicroDicom()
+        self.view_kind = "T2"                # 지금 보는 시리즈: "T2" 또는 "T1"
+        self.series_t2: imaging.SeriesData | None = None
+        self.series_t1: imaging.SeriesData | None = None
+        self.t2_slice_idx = 0                # T1 을 보는 동안 기억해 두는 T2 슬라이스
+        self.pending = None                  # 클릭했지만 아직 확정 전인 병변 위치 (x, y, instance)
+        self._t1_slice_cache: dict = {}
+        self.suggested = False               # 척추·종판이 자동 추천값인지
         self.zoom = 1.0                      # 화면 맞춤 대비 확대 배율 (1 = 화면에 맞춤)
         self.zoom_center: tuple[float, float] | None = None   # 확대 시 화면 가운데에 오는 원본 픽셀 좌표
         self._pan = None
@@ -232,6 +254,13 @@ class LabelerApp:
         self.auto_mdicom = tk.BooleanVar(value=config.AUTO_OPEN_MICRODICOM)
         ttk.Checkbutton(mrow, text="자동 열기", variable=self.auto_mdicom,
                         command=self._on_auto_mdicom).pack(side="left", padx=(8, 0))
+        vrow2 = ttk.Frame(panel)
+        vrow2.pack(fill="x", pady=(4, 0))
+        self.t1_button = ttk.Button(vrow2, text="T1 보기 (T)", command=self.toggle_t1)
+        self.t1_button.pack(side="left")
+        self.show_marks = tk.BooleanVar(value=True)
+        ttk.Checkbutton(vrow2, text="표시 보기 (H)", variable=self.show_marks,
+                        command=self.render).pack(side="left", padx=(8, 0))
         self.mdicom_var = tk.StringVar(value="")
         ttk.Label(panel, textvariable=self.mdicom_var, foreground="#555555").pack(anchor="w")
 
@@ -261,7 +290,10 @@ class LabelerApp:
         wrap = tkfont.nametofont("TkDefaultFont").measure("가") * 17   # 글꼴 크기에 맞춘 줄바꿈 폭
         ttk.Label(box, textvariable=self.hint_var, wraplength=wrap, justify="left",
                   foreground="#1f5fbf").pack(anchor="w", pady=(6, 0))
-        ttk.Button(box, text="병변 입력 끝내기 (Esc)", command=self.end_lesion).pack(fill="x", pady=(6, 0))
+        brow0 = ttk.Frame(box)
+        brow0.pack(fill="x", pady=(6, 0))
+        ttk.Button(brow0, text="확정 (Enter)", command=self.confirm_pending).pack(side="left", expand=True, fill="x")
+        ttk.Button(brow0, text="끝내기 (Esc)", command=self.end_lesion).pack(side="left", expand=True, fill="x")
 
         lf = ttk.LabelFrame(panel, text="기록된 병변", padding=6)
         lf.pack(fill="both", expand=True, pady=(10, 0))
@@ -356,6 +388,7 @@ class LabelerApp:
                    "<Left>": lambda: self.step_patient(-1), "<Right>": lambda: self.step_patient(1),
                    "<F1>": self.toggle_help, "<F2>": self.toggle_levels,
                    "<Home>": self.go_to_label_slice, "<Escape>": self.end_lesion,
+                   "<Return>": self.confirm_pending, "<KP_Enter>": self.confirm_pending,
                    "<Delete>": self.delete_lesion, "<Control-s>": self.retry_save,
                    "<Control-S>": self.retry_save}
         for seq, fn in actions.items():
@@ -391,6 +424,11 @@ class LabelerApp:
             self.reset_zoom()
         elif k == "m":
             self.open_microdicom(manual=True)
+        elif k == "t":
+            self.toggle_t1()
+        elif k == "h":
+            self.show_marks.set(not self.show_marks.get())
+            self.render()
         else:
             return None
         return "break"
@@ -423,7 +461,8 @@ class LabelerApp:
         if self.current is None:
             return
         p = self.patients[self.current]
-        folder = dataset.series_dir(p.study_id, p.t2_series)
+        series_id = p.t1_series if self.view_kind == "T1" else p.t2_series
+        folder = dataset.series_dir(p.study_id, series_id)
         if not manual and self.mdicom.opened_folder == folder and self.mdicom.proc \
                 and self.mdicom.proc.poll() is None:
             return                                   # 이미 이 환자가 열려 있음
@@ -459,7 +498,8 @@ class LabelerApp:
             return
         state = {"study_id": self.patients[self.current].study_id,
                  "patient_no": self.current + 1,
-                 "instance": self.current_instance(),
+                 "instance": self.current_instance() if self.view_kind == "T2" or not self.series_t2
+                 else self.series_t2.instances[self.t2_slice_idx],
                  "saved_at": workbook.now_text()}
         try:
             tmp = config.STATE_PATH.with_suffix(".tmp")
@@ -500,7 +540,11 @@ class LabelerApp:
         self.lesion_list.selection_clear(0, "end")
         self.refresh_panel()
 
-        self.series = None                       # 이전 환자 영상은 메모리에서 해제
+        self.series = self.series_t2 = self.series_t1 = None   # 이전 환자 영상은 메모리에서 해제
+        self.view_kind = "T2"
+        self.pending, self.suggested = None, False
+        self._t1_slice_cache = {}
+        self.t1_button.configure(text="T1 보기 (T)")
         self.coords = []
         self.zoom, self.zoom_center = 1.0, None
         self.bright.set(0)
@@ -514,7 +558,7 @@ class LabelerApp:
 
         t0 = time.time()
         series = imaging.SeriesData(folder)
-        self.series = series
+        self.series = self.series_t2 = series
         if not len(series):
             self.slice_idx = 0
             self.message = f"Sagittal T2 영상 파일이 없습니다.\n{folder}"
@@ -580,25 +624,79 @@ class LabelerApp:
         if self.current is None:
             return
         self.mode = label
-        self.vertebra_var.set("")
-        self.endplate_var.set("")
+        if self.pending is None:
+            self.vertebra_var.set("")
+            self.endplate_var.set("")
+            self.suggested = False
         self.refresh_panel()
         self.render()
 
     def end_lesion(self) -> None:
+        """Esc: 확정 전 클릭이 있으면 그것만 취소, 없으면 병변 입력 끝내기."""
+        if self.pending is not None:
+            self.pending = None
+            if self.suggested:
+                self.vertebra_var.set("")
+                self.endplate_var.set("")
+                self.suggested = False
+            self.hint_var.set("클릭을 취소했습니다.")
+            self.refresh_panel()
+            self.render()
+            return
         if self.mode is not None:
             self.hint_var.set("")
         self.mode = None
         self.vertebra_var.set("")
         self.endplate_var.set("")
+        self.suggested = False
         self.refresh_panel()
         self.render()
+
+    def suggest_endplate(self, x: float, y: float) -> tuple[str, str, str] | None:
+        """
+        클릭 위치와 레벨 초록점(디스크 위치)으로 척추·종판 추천.
+        가장 가까운 디스크를 찾고, 척추 축 방향으로 그 디스크보다 위면 '위 척추 하종판',
+        아래면 '아래 척추 상종판'. 반환: (척추, 종판, 설명) — 좌표가 없으면 None.
+        """
+        discs: dict[str, tuple[float, float]] = {}
+        for c in self.coords:
+            parts = c["level"].split("/")
+            if len(parts) == 2 and parts[0] in VERTEBRAE and parts[0] not in discs:
+                discs[parts[0]] = (c["x"], c["y"])        # 'L3/L4' → 위 척추 L3 기준
+        order = [v for v in VERTEBRAE[:-1] if v in discs]   # 위 → 아래 (L1 ~ L5)
+        if not order:
+            return None
+        pts = [discs[v] for v in order]
+        i = min(range(len(pts)), key=lambda k: (pts[k][0] - x) ** 2 + (pts[k][1] - y) ** 2)
+        # 척추 축 방향: 이웃 디스크를 이은 방향 (디스크가 하나뿐이면 세로 방향)
+        a, b = pts[max(i - 1, 0)], pts[min(i + 1, len(pts) - 1)]
+        ax, ay = (b[0] - a[0], b[1] - a[1]) if a != b else (0.0, 1.0)
+        below = (x - pts[i][0]) * ax + (y - pts[i][1]) * ay > 0
+        upper = order[i]
+        lower = VERTEBRAE[VERTEBRAE.index(upper) + 1]
+        disc = f"{upper}/{lower}"
+        if below:
+            return lower, "superior", f"{disc} 디스크 아래"
+        return upper, "inferior", f"{disc} 디스크 위"
+
+    def confirm_pending(self) -> None:
+        """Enter: 클릭해 둔 위치를 지금 고른 척추·종판으로 기록."""
+        if self.pending is None or self.mode is None:
+            return
+        if not (self.vertebra_var.get() and self.endplate_var.get()):
+            self.hint_var.set("척추(1~6)와 종판(U/D)을 고른 뒤 Enter를 누르세요.")
+            self.root.bell()
+            return
+        x, y, inst = self.pending
+        self.pending = None
+        self.add_lesion(x, y, inst)
 
     def select_vertebra(self, v: str) -> None:
         if self.mode is None:
             self.hint_var.set("먼저 S(쉬모를) 또는 A(애매)를 누르세요.")
             return
         self.vertebra_var.set(v)
+        self.suggested = False
         if v == "S1":                              # S1 은 상종판만
             self.endplate_var.set("superior")
         self.refresh_panel()
@@ -613,15 +711,17 @@ class LabelerApp:
             self.root.bell()
             return
         self.endplate_var.set(e)
+        self.suggested = False
         self.refresh_panel()
         self.render()
 
-    def add_lesion(self, x: float, y: float) -> None:
+    def add_lesion(self, x: float, y: float, instance: int | None = None) -> None:
         p = self.patients[self.current]
         rec = self.record
         v, e = self.vertebra_var.get(), self.endplate_var.get()
+        instance = self.current_instance() if instance is None else instance
         les = workbook.Lesion(lesion_id=self.store.new_lesion_id(p.study_id), study_id=p.study_id,
-                              series_id=p.t2_series, instance=self.current_instance(), vertebra=v,
+                              series_id=p.t2_series, instance=instance, vertebra=v,
                               endplate=e, x=x, y=y, label=self.mode, labeled_at=workbook.now_text())
         if self.mode == UNCERTAIN:
             les.capture_file = self._save_capture(les, rec)
@@ -632,10 +732,11 @@ class LabelerApp:
             f"x={x:.1f} y={y:.1f}" + (f" 캡처 {les.capture_file}" if les.capture_file else ""))
         self.vertebra_var.set("")                  # 다음 병변은 척추·종판을 새로 고르도록
         self.endplate_var.set("")
+        self.suggested = False
         self.commit()
         self.lesion_list.selection_clear(0, "end")
         self.hint_var.set(f"기록됨: {v} {ENDPLATE_KO[e]} ({LABEL_KO[les.label]}).\n"
-                          "병변이 더 있으면 척추·종판을 고르고 클릭, 끝났으면 Esc 또는 → 다음 환자.")
+                          "병변이 더 있으면 다시 클릭, 끝났으면 Esc 또는 → 다음 환자.")
 
     def _capture_name(self, les: workbook.Lesion, rec: workbook.Record) -> str:
         base = f"{les.study_id}_{les.vertebra}{'sup' if les.endplate == 'superior' else 'inf'}"
@@ -653,7 +754,9 @@ class LabelerApp:
                                                    self.bright.get(), self.contrast.get())
             title = (f"study {les.study_id} | {les.vertebra} {les.endplate} | Uncertain | "
                      f"instance {les.instance} | x={les.x:.1f}, y={les.y:.1f}")
-            img = imaging.make_capture(self.series.get(self.slice_idx), level, width, (les.x, les.y),
+            idx = self.series_t2.index_of_instance(les.instance)
+            img = imaging.make_capture(self.series_t2.get(self.slice_idx if idx is None else idx),
+                                       level, width, (les.x, les.y),
                                        title, self.coords, les.instance)
             img.save(config.CAPTURE_DIR / name)
             return name
@@ -715,6 +818,8 @@ class LabelerApp:
         les = self.selected_lesion()
         if les is None or not self.series:
             return
+        if self.view_kind == "T1":                 # 병변은 T2 기준이므로 T2 로 돌아가서 이동
+            self.toggle_t1()
         idx = self.series.index_of_instance(les.instance)
         if idx is not None:
             self.step_slice(idx - self.slice_idx)
@@ -806,7 +911,16 @@ class LabelerApp:
         else:
             self.mode_var.set(f"{'S 쉬모를 결절' if self.mode == SCHMORL else 'A 애매'} 입력 중")
             v, e = self.vertebra_var.get(), self.endplate_var.get()
-            if not v:
+            if self.pending is not None:
+                tag = " (자동 추천)" if self.suggested else ""
+                if v and e:
+                    self.hint_var.set(f"{v} {ENDPLATE_KO[e]}{tag}\n맞으면 Enter, 다르면 1~6 / U·D 로 고친 뒤 Enter."
+                                      "\n(Esc = 이 클릭 취소)")
+                else:
+                    self.hint_var.set("척추(1~6)와 종판(U/D)을 고른 뒤 Enter.\n(레벨 좌표가 없어 추천 불가)")
+            elif not v and not e:
+                self.hint_var.set("병변을 클릭하면 척추·종판을 추천합니다.\n(먼저 1~6, U/D 를 고르면 클릭 즉시 기록)")
+            elif not v:
                 self.hint_var.set("① 척추를 고르세요 (키 1~6).")
             elif not e:
                 self.hint_var.set(f"{v} 선택됨. ② 종판을 고르세요 (U=상종판, D=하종판).")
@@ -837,6 +951,16 @@ class LabelerApp:
         return None
 
     def go_to_label_slice(self) -> None:
+        if self.view_kind == "T1":
+            if self.coords:                        # T1 에서는 레벨 좌표와 같은 위치의 T1 슬라이스로
+                p = self.coords[len(self.coords) // 2]
+                i2 = self.series_t2.index_of_instance(p["instance"])
+                g2 = self.series_t2.geometry(i2) if i2 is not None else None
+                if g2 is not None:
+                    j = imaging.nearest_slice(self.series_t1, imaging.pixel_to_patient(g2, p["x"], p["y"]))
+                    if j is not None:
+                        self.step_slice(j - self.slice_idx)
+            return
         idx = self.label_slice_index()
         if idx is not None:
             self.step_slice(idx - self.slice_idx)
@@ -851,20 +975,44 @@ class LabelerApp:
                                     font=self._level_font, tags=tags)
         self.canvas.create_text(x, y, text=text, anchor=anchor, fill=color, font=self._level_font, tags=tags)
 
+    def map_t2_point(self, x: float, y: float, instance: int):
+        """
+        T2 픽셀 좌표를 지금 보는 화면의 픽셀 좌표로.
+        반환 (x, y, 같은 슬라이스인지, 그 점이 있는 슬라이스의 instance) — T1 위치를 못 구하면 None.
+        """
+        if self.view_kind == "T2":
+            return x, y, instance == self.current_instance(), instance
+        i2 = self.series_t2.index_of_instance(instance)
+        g2 = self.series_t2.geometry(i2) if i2 is not None else None
+        if g2 is None:
+            return None
+        p = imaging.pixel_to_patient(g2, x, y)
+        key = (instance, round(x), round(y))
+        if key not in self._t1_slice_cache:
+            self._t1_slice_cache[key] = imaging.nearest_slice(self.series_t1, p)
+        j = self._t1_slice_cache[key]
+        g1 = self.series_t1.geometry(j) if j is not None else None
+        if g1 is None:
+            return None
+        x1, y1 = imaging.patient_to_pixel(g1, p)
+        return x1, y1, j == self.slice_idx, self.series_t1.instances[j]
+
     def draw_levels(self) -> None:
         """
         L1/L2 ~ L5/S1 위치 표시. 점은 원래 좌표에 두고, 글자는 오른쪽으로 떨어진 곳에 한 줄로 모아
         점과 선으로 이어 줍니다 (글자가 종판 경계를 가리지 않도록).
-        좌표를 찍은 슬라이스는 진하게, 다른 슬라이스는 흐리게.
+        좌표를 찍은 슬라이스는 진하게, 다른 슬라이스는 흐리게. T1 화면에서는 같은 위치로 옮겨 표시.
         """
         c = self.canvas
-        inst = self.current_instance()
         points = []
         for p in self.coords:
-            if 0 <= p["x"] < self.view["w"] and 0 <= p["y"] < self.view["h"]:
-                cx, cy = self.pixel_to_canvas(p["x"], p["y"])
-                same = p["instance"] == inst
-                text = p["level"] if same else f'{p["level"]} (inst {p["instance"]})'
+            m = self.map_t2_point(p["x"], p["y"], p["instance"])
+            if m is None:
+                continue
+            x, y, same, inst = m
+            if 0 <= x < self.view["w"] and 0 <= y < self.view["h"]:
+                cx, cy = self.pixel_to_canvas(x, y)
+                text = p["level"] if same else f'{p["level"]} (inst {inst})'
                 points.append((cx, cy, same, text))
         if not points:
             return
@@ -882,38 +1030,119 @@ class LabelerApp:
                               dash=() if same else (3, 3), tags="level")
             self._outlined_text(max(label_x, cx + r + 10), cy, text, color, "w", "level")
 
+    def _arrow(self, cx: float, cy: float, color: str, width: int, dashed: bool, text: str, tags: str) -> None:
+        """병변을 가리지 않게, 왼쪽 위에서 들어와 병변 바로 앞(약 8px)에서 멈추는 화살표 + 글자."""
+        tip, tail = (cx - 6, cy - 5), (cx - 42, cy - 32)
+        dash = (4, 3) if dashed else ()
+        self.canvas.create_line(*tail, *tip, fill="black", width=width + 2, arrow="last",
+                                arrowshape=(11, 13, 5), dash=dash, tags=tags)
+        self.canvas.create_line(*tail, *tip, fill=color, width=width, arrow="last",
+                                arrowshape=(10, 12, 4), dash=dash, tags=tags)
+        self._outlined_text(tail[0] - 2, tail[1] - 2, text, color, "se", tags)
+
     def draw_lesions(self) -> None:
-        """기록된 병변: 같은 슬라이스면 진한 원 + 번호, 다른 슬라이스면 점선 원 (inst 표시)."""
+        """기록된 병변: 같은 슬라이스면 진한 화살표 + 번호, 다른 슬라이스면 점선 화살표 (inst 표시)."""
         rec = self.record
         if rec is None:
             return
-        inst = self.current_instance()
         selected = self.selected_lesion()
         for les in rec.lesions:
-            cx, cy = self.pixel_to_canvas(les.x, les.y)
+            m = self.map_t2_point(les.x, les.y, les.instance)
+            if m is None:
+                continue
+            x, y, same, inst = m
+            cx, cy = self.pixel_to_canvas(x, y)
             color = LESION_COLOR.get(les.label, "#ff4040")
             num = les.lesion_id.rsplit("_", 1)[-1]
             short = f"#{num} {les.vertebra}{'상' if les.endplate == 'superior' else '하'}"
-            if les.instance == inst:
-                r = 9
-                width = 4 if les is selected else 2
-                self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=width, tags="lesion")
-                self.canvas.create_line(cx - 3, cy, cx + 3, cy, fill=color, tags="lesion")
-                self.canvas.create_line(cx, cy - 3, cx, cy + 3, fill=color, tags="lesion")
-                self._outlined_text(cx + r + 4, cy, short, color, "w", "lesion")
+            if same:
+                self._arrow(cx, cy, color, 4 if les is selected else 2, False, short, "lesion")
             else:
-                r = 7
-                self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=1,
-                                        dash=(3, 3), tags="lesion")
-                self._outlined_text(cx + r + 4, cy, f"{short} (inst {les.instance})", color, "w", "lesion")
+                self._arrow(cx, cy, color, 1, True, f"{short} (inst {inst})", "lesion")
+        if self.pending is not None and self.view_kind == "T2":
+            x, y, inst = self.pending
+            cx, cy = self.pixel_to_canvas(x, y)
+            v, e = self.vertebra_var.get(), self.endplate_var.get()
+            label = f"{v}{'상' if e == 'superior' else '하'}? (Enter)" if v and e else "? (Enter)"
+            self._arrow(cx, cy, PENDING_COLOR, 2, inst != self.current_instance(), label, "pending")
 
     def draw_mode_banner(self) -> None:
+        c = self.canvas
+        if self.view_kind == "T1":
+            self._outlined_text(c.winfo_width() - 10, 12, "Sagittal T1 보기 중 (T = T2로)", "#7fd7ff", "e", "banner")
+        if not self.show_marks.get():
+            self._outlined_text(c.winfo_width() - 10, 32, "표시 숨김 (H)", "#dddddd", "e", "banner")
         if self.mode is None:
             return
         v, e = self.vertebra_var.get(), self.endplate_var.get()
-        target = f"{v} {ENDPLATE_KO[e]} → 병변 클릭" if v and e else "척추·종판을 고르세요"
-        text = f"{'S 쉬모를' if self.mode == SCHMORL else 'A 애매'} 입력 중: {target}   (Esc 끝내기)"
+        if self.pending is not None:
+            target = f"{v} {ENDPLATE_KO[e]}{' (추천)' if self.suggested else ''} → Enter 로 확정" if v and e \
+                else "척추·종판 고른 뒤 Enter"
+        else:
+            target = f"{v} {ENDPLATE_KO[e]} → 병변 클릭" if v and e else "병변을 클릭하세요 (자동 추천)"
+        text = f"{'S 쉬모를' if self.mode == SCHMORL else 'A 애매'} 입력 중: {target}   (Esc)"
         self._outlined_text(10, 12, text, LESION_COLOR[self.mode], "w", "banner")
+
+    # ── T1 전환 ───────────────────────────────────────────
+    def toggle_t1(self) -> None:
+        """T 키: 같은 환자의 Sagittal T1 ↔ T2. 같은 위치의 슬라이스와 확대 위치를 맞춰 줌."""
+        if self.current is None or not self.series_t2 or not len(self.series_t2) or self.message:
+            return
+        p = self.patients[self.current]
+        if self.view_kind == "T2":
+            if not p.t1_series:
+                self.hint_var.set("이 환자는 Sagittal T1 시리즈 정보가 없습니다.")
+                return
+            if self.series_t1 is None:
+                self.series_t1 = imaging.SeriesData(dataset.series_dir(p.study_id, p.t1_series))
+            if not len(self.series_t1):
+                self.hint_var.set(f"Sagittal T1 영상 파일이 없습니다.\n{self.series_t1.folder}")
+                return
+            self.t2_slice_idx = self.slice_idx
+            src, dst, kind = self.series_t2, self.series_t1, "T1"
+        else:
+            src, dst, kind = self.series_t1, self.series_t2, "T2"
+        self.pending = None
+        self._t1_slice_cache = {}
+
+        # 같은 위치(환자 몸 기준 좌표)의 슬라이스와 확대 중심 찾기
+        h, w = src.get(self.slice_idx).shape
+        center = self.zoom_center or ((w - 1) / 2, (h - 1) / 2)
+        g = src.geometry(self.slice_idx)
+        j, new_center = None, None
+        if g is not None:
+            pt = imaging.pixel_to_patient(g, *center)
+            j = imaging.nearest_slice(dst, pt)
+            if j is not None:
+                new_center = imaging.patient_to_pixel(dst.geometry(j), pt)
+        if j is None:                                  # 위치 정보가 없으면 비율로
+            j = self.t2_slice_idx if kind == "T2" else \
+                round(self.slice_idx / max(len(src) - 1, 1) * (len(dst) - 1))
+        try:
+            arr = dst.get(j)
+            self.level0, self.width0 = imaging.auto_window(arr)
+        except Exception as e:
+            self.hint_var.set(f"{kind} 영상을 읽지 못했습니다: {e!r}")
+            log(traceback.format_exc())
+            return
+        if new_center is None:
+            dh, dw = arr.shape
+            new_center = (center[0] / max(w - 1, 1) * (dw - 1), center[1] / max(h - 1, 1) * (dh - 1))
+        self.series, self.view_kind, self.slice_idx = dst, kind, j
+        if self.zoom > 1:
+            self.zoom_center = new_center
+        self._syncing = True
+        self.slice_scale.configure(to=max(len(dst) - 1, 1))
+        self.slice_scale.set(j)
+        self._syncing = False
+        self.t1_button.configure(text="T2 보기 (T)" if kind == "T1" else "T1 보기 (T)")
+        self.title_var.set(f"[{self.current + 1}/{len(self.patients)}] study {p.study_id}"
+                           + ("  ·  T1 (기록은 T2에서)" if kind == "T1" else ""))
+        log(f"  {kind} 보기: instance {dst.instances[j]}")
+        self.refresh_panel()
+        self.render()
+        if self.mdicom.proc is not None and self.mdicom.proc.poll() is None and self.auto_mdicom.get():
+            self.open_microdicom()                 # MicroDicom 도 같은 시리즈로
 
     # ── 슬라이스 ──────────────────────────────────────────
     def step_slice(self, delta: int) -> None:
@@ -1059,9 +1288,10 @@ class LabelerApp:
                                Image.Resampling.BILINEAR)
             c.create_image(ox + x0 * s, oy + y0 * s, anchor="nw", image=self._keep_photo(crop), tags="image")
             self.view = {"ox": ox, "oy": oy, "sx": s, "sy": s, "w": w, "h": h}
-        if self.show_levels.get():
-            self.draw_levels()
-        self.draw_lesions()
+        if self.show_marks.get():
+            if self.show_levels.get():
+                self.draw_levels()
+            self.draw_lesions()
         self.draw_mode_banner()
         self._update_info()
 
@@ -1097,7 +1327,8 @@ class LabelerApp:
         n = len(self.series)
         self.slice_text.set(f"{self.slice_idx + 1}/{n}  inst {self.current_instance()}")
         gap = "   ※ instance 번호 일부 누락 (다운로드 미완료 의심)" if self.series.has_gaps() else ""
-        series_id = self.patients[self.current].t2_series if self.current is not None else ""
+        p = self.patients[self.current] if self.current is not None else None
+        series_id = "" if p is None else (f"T1 {p.t1_series}" if self.view_kind == "T1" else p.t2_series)
         if self.coords:
             insts = sorted({c["instance"] for c in self.coords})
             levels = f"   레벨 좌표 {len(self.coords)}개 (instance {', '.join(map(str, insts))})"
@@ -1124,11 +1355,27 @@ class LabelerApp:
         if pos is None or self.message:
             return
         if self.mode is not None:
-            if not (self.vertebra_var.get() and self.endplate_var.get()):
-                self.hint_var.set("척추와 종판을 먼저 고른 뒤 클릭하세요.")
+            if self.view_kind != "T2":
+                self.hint_var.set("병변 기록은 T2 화면에서 합니다. T 키로 T2로 돌아가세요.")
                 self.root.bell()
                 return
-            self.add_lesion(*pos)
+            chosen = self.vertebra_var.get() and self.endplate_var.get() and not self.suggested
+            if chosen and self.pending is None:
+                self.add_lesion(*pos)                  # 직접 고른 뒤 클릭 → 바로 기록
+                return
+            self.pending = (pos[0], pos[1], self.current_instance())
+            if not chosen:                             # 자동 추천
+                sug = self.suggest_endplate(*pos)
+                if sug:
+                    self.vertebra_var.set(sug[0])
+                    self.endplate_var.set(sug[1])
+                    self.suggested = True
+                else:
+                    self.vertebra_var.set("")
+                    self.endplate_var.set("")
+                    self.suggested = False
+            self.refresh_panel()
+            self.render()
             return
         # 입력 중이 아닐 때: 클릭 위치 확인용 표시
         self.cursor_var.set(f"클릭  instance {self.current_instance()},  {self._pixel_text(e.x, e.y)}")

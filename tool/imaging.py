@@ -27,6 +27,7 @@ class SeriesData:
         self.instances = [int(f.stem) if f.stem.isdigit() else i + 1
                           for i, f in enumerate(self.files)]
         self._cache: dict[int, np.ndarray] = {}
+        self._geom: dict[int, dict | None] = {}
 
     def __len__(self) -> int:
         return len(self.files)
@@ -42,6 +43,22 @@ class SeriesData:
             return self.instances.index(int(instance_number))
         except (ValueError, TypeError):
             return None
+
+    def geometry(self, index: int) -> dict | None:
+        """
+        슬라이스의 위치 정보 (환자 몸 기준 mm 좌표). 없으면 None.
+        ipp = 첫 픽셀 중심 위치, row = 가로(x) 방향, col = 세로(y) 방향, ps = (행 간격, 열 간격)
+        """
+        if index not in self._geom:
+            try:
+                ds = pydicom.dcmread(self.files[index], stop_before_pixels=True)
+                iop = [float(v) for v in ds.ImageOrientationPatient]
+                self._geom[index] = {"ipp": np.array([float(v) for v in ds.ImagePositionPatient]),
+                                     "row": np.array(iop[:3]), "col": np.array(iop[3:]),
+                                     "ps": (float(ds.PixelSpacing[0]), float(ds.PixelSpacing[1]))}
+            except Exception:
+                self._geom[index] = None
+        return self._geom[index]
 
     def get(self, index: int) -> np.ndarray:
         """index 번째 슬라이스의 픽셀 배열(float32, 2차원)."""
@@ -131,12 +148,48 @@ def make_capture(arr: np.ndarray, level: float, width: float, lesion: tuple[floa
                 draw.line([cx + 4, cy, tx - 3, cy], fill=color, width=1)
             draw.text((tx, cy), p["level"], fill=color, font=small, anchor="lm", stroke_width=2, stroke_fill="black")
 
-    cx, cy = to_img(*lesion)                          # 병변 위치
-    r = max(10, img.width // 40)
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 140, 0), width=3)
-    draw.line([cx - r * 1.8, cy, cx - r * 1.2, cy], fill=(255, 140, 0), width=3)
-    draw.line([cx + r * 1.2, cy, cx + r * 1.8, cy], fill=(255, 140, 0), width=3)
+    # 병변 위치: 병변을 가리지 않도록 왼쪽 위에서 들어와 병변 바로 앞에서 멈추는 화살표
+    cx, cy = to_img(*lesion)
+    unit = max(1.0, img.width / 640)
+    tip = (cx - 6 * unit, cy - 5 * unit)
+    tail = (cx - 46 * unit, cy - 36 * unit)
+    orange = (255, 140, 0)
+    draw.line([tail, tip], fill=(0, 0, 0), width=round(5 * unit))
+    draw.line([tail, tip], fill=orange, width=round(3 * unit))
+    ux, uy = (tip[0] - tail[0]), (tip[1] - tail[1])
+    n = (ux ** 2 + uy ** 2) ** 0.5
+    ux, uy = ux / n, uy / n
+    head = 11 * unit
+    draw.polygon([tip, (tip[0] - head * ux + head * 0.5 * uy, tip[1] - head * uy - head * 0.5 * ux),
+                  (tip[0] - head * ux - head * 0.5 * uy, tip[1] - head * uy + head * 0.5 * ux)],
+                 fill=orange, outline=(0, 0, 0))
 
     draw.rectangle([0, 0, img.width, small.size * 2 if hasattr(small, "size") else 30], fill=(0, 0, 0))
     draw.text((8, 4), title, fill=(255, 200, 80), font=small)
     return img
+
+
+# ── T1 ↔ T2 위치 맞추기 (DICOM 위치 정보 사용) ─────────────────
+def pixel_to_patient(g: dict, x: float, y: float) -> np.ndarray:
+    """슬라이스 픽셀 (x, y) → 환자 몸 기준 좌표(mm)."""
+    return g["ipp"] + x * g["ps"][1] * g["row"] + y * g["ps"][0] * g["col"]
+
+
+def patient_to_pixel(g: dict, p: np.ndarray) -> tuple[float, float]:
+    """환자 몸 기준 좌표(mm) → 슬라이스 픽셀 (x, y) (슬라이스 면에 수직 방향 차이는 무시)."""
+    d = p - g["ipp"]
+    return float(d @ g["row"]) / g["ps"][1], float(d @ g["col"]) / g["ps"][0]
+
+
+def nearest_slice(series: SeriesData, p: np.ndarray) -> int | None:
+    """점 p 에 가장 가까운 슬라이스 번호 (위치 정보가 없으면 None)."""
+    best, best_d = None, None
+    for i in range(len(series)):
+        g = series.geometry(i)
+        if g is None:
+            return None
+        normal = np.cross(g["row"], g["col"])
+        d = abs(float((p - g["ipp"]) @ normal))
+        if best_d is None or d < best_d:
+            best, best_d = i, d
+    return best
