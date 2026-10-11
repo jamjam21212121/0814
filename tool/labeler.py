@@ -4,8 +4,8 @@ LumbarDISC 쉬모를 결절 라벨링 프로그램
   ② 이미지 창과 슬라이스 넘기기
   ③ 레벨 위치 표시 (train_label_coordinates.csv)
   ④ 분류 입력과 엑셀 기록 (입력할 때마다 즉시 저장)
-  ⑤ 이어하기: 마지막으로 보던 환자·슬라이스부터 다시 시작  ← 지금 단계
-  (⑥ MicroDicom 열기는 다음 단계에서 추가)
+  ⑤ 이어하기: 마지막으로 보던 환자·슬라이스부터 다시 시작
+  ⑥ MicroDicom 자동 열기: 환자를 바꾸면 그 환자의 Sagittal T2 를 MicroDicom 으로 엶 (M 키)
 
 실행: run_labeler.bat 더블클릭
 
@@ -34,6 +34,7 @@ import config
 import dataset
 import excel_io
 import imaging
+import microdicom
 import workbook
 from workbook import SCHMORL, UNCERTAIN, VERTEBRAE
 
@@ -50,7 +51,7 @@ LABEL_KO = {SCHMORL: "쉬모를", UNCERTAIN: "애매"}
 ENDPLATE_KO = {"superior": "상종판", "inferior": "하종판"}
 STATUS_COLORS = {config.STATUS_DONE: "#d6f0d6", config.STATUS_UNCERTAIN: "#ffe2b0"}
 # 한글 입력 상태에서 눌린 키 → 영문 키 (두벌식 자판 기준)
-HANGUL_TO_KEY = {"ㅜ": "n", "ㄴ": "s", "ㅁ": "a", "ㅕ": "u", "ㅇ": "d"}
+HANGUL_TO_KEY = {"ㅜ": "n", "ㄴ": "s", "ㅁ": "a", "ㅕ": "u", "ㅇ": "d", "ㅡ": "m"}
 
 HELP_TEXT = """조작법
 
@@ -77,6 +78,11 @@ HELP_TEXT = """조작법
   오른쪽 버튼 누른 채 드래그
    · 위아래 = 밝기 · 좌우 = 대비
   슬라이더, [초기화] 버튼
+
+■ MicroDicom
+  환자를 바꾸면 자동으로 열림
+  M 키 / 버튼 = 지금 환자 다시 열기
+  [자동 열기] 체크로 끄고 켬
 
 ■ 레벨 표시 (L1/L2 ~ L5/S1)
   F2 키, [레벨 표시] 체크
@@ -116,6 +122,8 @@ class LabelerApp:
         self.coords: list[dict] = []         # 현재 환자의 레벨 좌표 (train_label_coordinates.csv)
         self.mode: str | None = None         # 병변 입력 중이면 SCHMORL 또는 UNCERTAIN
         self._resume_instance: int | None = None
+        self.mdicom = microdicom.MicroDicom()
+        self._mdicom_job = None
         self._photo = None
         self._drag = None
         self._syncing = False
@@ -206,6 +214,16 @@ class LabelerApp:
         ttk.Button(row, text="N 정상", command=self.press_normal).pack(side="left", expand=True, fill="x")
         ttk.Button(row, text="S 쉬모를", command=lambda: self.start_lesion(SCHMORL)).pack(side="left", expand=True, fill="x")
         ttk.Button(row, text="A 애매", command=lambda: self.start_lesion(UNCERTAIN)).pack(side="left", expand=True, fill="x")
+
+        mrow = ttk.Frame(panel)
+        mrow.pack(fill="x", pady=(8, 0))
+        ttk.Button(mrow, text="MicroDicom 열기 (M)",
+                   command=lambda: self.open_microdicom(manual=True)).pack(side="left")
+        self.auto_mdicom = tk.BooleanVar(value=config.AUTO_OPEN_MICRODICOM)
+        ttk.Checkbutton(mrow, text="자동 열기", variable=self.auto_mdicom,
+                        command=self._on_auto_mdicom).pack(side="left", padx=(8, 0))
+        self.mdicom_var = tk.StringVar(value="")
+        ttk.Label(panel, textvariable=self.mdicom_var, foreground="#555555").pack(anchor="w")
 
         box = self.lesion_box = ttk.LabelFrame(panel, text="병변 입력", padding=6)
         box.pack(fill="x", pady=(10, 0))
@@ -352,6 +370,8 @@ class LabelerApp:
             self.select_endplate("superior")
         elif k == "d":
             self.select_endplate("inferior")
+        elif k == "m":
+            self.open_microdicom(manual=True)
         else:
             return None
         return "break"
@@ -363,6 +383,40 @@ class LabelerApp:
         else:
             self.help_frame.pack(side="right", fill="y", before=self.center_frame)
             self.help_button.configure(text="조작법 닫기 (F1)")
+
+    # ── ⑥ MicroDicom ──────────────────────────────────────
+    def _schedule_microdicom(self) -> None:
+        """환자에 잠시 머물면 MicroDicom 을 엶 (빠르게 넘기는 중에는 열지 않음)."""
+        if self._mdicom_job is not None:
+            self.root.after_cancel(self._mdicom_job)
+            self._mdicom_job = None
+        if self.auto_mdicom.get():
+            self._mdicom_job = self.root.after(config.MICRODICOM_DELAY_MS, self.open_microdicom)
+
+    def _on_auto_mdicom(self) -> None:
+        if self.auto_mdicom.get():
+            self.open_microdicom()
+        else:
+            self.mdicom_var.set("MicroDicom 자동 열기 꺼짐 (M 키로 직접 열기)")
+
+    def open_microdicom(self, manual: bool = False) -> None:
+        self._mdicom_job = None
+        if self.current is None:
+            return
+        p = self.patients[self.current]
+        folder = dataset.series_dir(p.study_id, p.t2_series)
+        if not manual and self.mdicom.opened_folder == folder and self.mdicom.proc \
+                and self.mdicom.proc.poll() is None:
+            return                                   # 이미 이 환자가 열려 있음
+        error = self.mdicom.open(folder)
+        if error:
+            log("[MicroDicom] " + error.replace("\n", " "))
+            self.mdicom_var.set("MicroDicom 열기 실패 (검은 창 참고)")
+            if manual:
+                messagebox.showwarning("MicroDicom 열기 실패", error)
+            return
+        log(f"[MicroDicom] study {p.study_id} 열기: {folder}")
+        self.mdicom_var.set(f"MicroDicom: study {p.study_id} 열림")
 
     # ── ⑤ 이어하기 ───────────────────────────────────────
     def _resume_position(self) -> tuple[int, int | None]:
@@ -432,6 +486,7 @@ class LabelerApp:
         self.bright.set(0)
         self.contrast.set(0)
         folder = dataset.series_dir(p.study_id, p.t2_series)
+        self._schedule_microdicom()
         log(f"[환자 {index + 1}] study {p.study_id} 영상 읽는 중: {folder}")
         self.message = "영상 불러오는 중...\n(OneDrive 온라인 전용 파일이면 처음엔 오래 걸릴 수 있습니다)"
         self.render()

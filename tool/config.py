@@ -6,7 +6,7 @@
 from pathlib import Path
 
 # 코드 버전 — 실행 화면 맨 위에 표시됩니다. 최신 코드를 받았는지 확인할 때 보세요.
-TOOL_VERSION = "2026-10-11d"
+TOOL_VERSION = "2026-10-12"
 
 # ── 폴더 ────────────────────────────────────────────────
 # 모든 입력(데이터)과 결과물(엑셀, 캡처, 백업, 보고서)은 이 폴더 안에서만 읽고 씁니다.
@@ -58,3 +58,11 @@ AUTO_NEXT_AFTER_NORMAL = True
 # ── ⑤ 이어하기 ────────────────────────────────────────────
 # 마지막으로 보던 환자·슬라이스를 기억하는 파일 (지우면 첫 '미완료' 환자부터 시작)
 STATE_PATH = LABELING_DIR / "labeler_state.json"
+
+# ── ⑥ MicroDicom 자동 열기 ───────────────────────────────
+MICRODICOM_PATH = Path(r"C:\Program Files\MicroDicom\mDicom.exe")
+# MicroDicom 에 넘기는 인자. {folder} 자리에 현재 환자의 Sagittal T2 폴더가 들어갑니다.
+# (공식 설명서: mDicom.exe -fd <파일 또는 폴더>. 버전에 따라 안 되면 ["{folder}"] 로 바꿔 보세요)
+MICRODICOM_ARGS = ["-fd", "{folder}"]
+AUTO_OPEN_MICRODICOM = True        # 환자를 바꾸면 자동으로 열기 (프로그램 안 체크박스로도 끄고 켤 수 있음)
+MICRODICOM_DELAY_MS = 800          # 환자에 이 시간(ms) 이상 머물러야 열기 (빠르게 넘길 때 창이 쌓이지 않게)

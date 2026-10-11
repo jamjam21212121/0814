@@ -113,6 +113,17 @@ RSNA 2024 Lumbar Spine 데이터의 Sagittal T2 영상을 보면서 쉬모를 �
   환자를 바꿀 때마다 기록하므로 프로그램이 갑자기 꺼져도 마지막 환자부터 이어집니다.
 - 이 파일을 지우면(또는 깨지면) 첫 '미완료' 환자부터 시작합니다.
 
+### MicroDicom 자동 열기 (⑥)
+- 환자를 바꾸고 **0.8초쯤 머물면** 그 환자의 Sagittal T2 폴더를 MicroDicom으로 엽니다.
+  (← → 로 빠르게 넘기는 중에는 열지 않습니다)
+- 이 프로그램이 열었던 이전 MicroDicom 창은 닫고 새로 엽니다. 직접 연 MicroDicom 창은 건드리지 않습니다.
+- **M 키** 또는 [MicroDicom 열기] 버튼 = 지금 환자를 다시 열기, [자동 열기] 체크 = 자동 열기 끄고 켜기.
+- 설정은 `config.py`:
+  - `MICRODICOM_PATH` — 실행 파일 위치 (기본 `C:\Program Files\MicroDicom\mDicom.exe`)
+  - `MICRODICOM_ARGS` — 넘기는 인자 (기본 `["-fd", "{folder}"]`, 공식 설명서의 `mDicom.exe -fd <폴더>`).
+    MicroDicom 버전에 따라 폴더가 안 열리면 `["{folder}"]`로 바꿔 보세요.
+  - `AUTO_OPEN_MICRODICOM`, `MICRODICOM_DELAY_MS`
+
 ## 파일 설명
 
 | 파일 | 역할 |
@@ -127,3 +138,4 @@ RSNA 2024 Lumbar Spine 데이터의 Sagittal T2 영상을 보면서 쉬모를 �
 | `workbook.py` | 엑셀 양식(sample_list, labels, lesions) 읽기/쓰기 |
 | `imaging.py` | DICOM 시리즈 읽기, 밝기/대비 계산, 캡처 이미지 |
 | `labeler.py` | 라벨링 프로그램 본체 |
+| `microdicom.py` | MicroDicom 실행·이전 창 닫기 (⑥) |
