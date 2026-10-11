@@ -75,7 +75,8 @@ def inspect_zip(path: Path) -> None:
         used = [int(s) for s in re.findall(r"<(?:\w+:)?c [^>]*\bs=\"(\d+)\"", xml)]
         used += [int(s) for s in re.findall(r"<(?:\w+:)?(?:row|col) [^>]*\bs=\"(\d+)\"", xml)]
         bad = sorted({s for s in used if s >= n_xf})
-        out(f"  {name}: 셀 {len(re.findall(r'<(?:\w+:)?c ', xml))}개, 스타일 번호 최대 {max(used) if used else '-'}"
+        n_cells = len(re.findall(r"<(?:\w+:)?c ", xml))
+        out(f"  {name}: 셀 {n_cells}개, 스타일 번호 최대 {max(used) if used else '-'}"
             f" (스타일 {n_xf}개)" + (f"  [문제] 없는 스타일 번호 {bad[:10]}" if bad else ""))
 
 
