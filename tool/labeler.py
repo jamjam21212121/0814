@@ -79,6 +79,13 @@ HELP_TEXT = """조작법
    · 위아래 = 밝기 · 좌우 = 대비
   슬라이더, [초기화] 버튼
 
+■ 확대 / 이동
+  Ctrl + 휠 = 마우스 위치 중심 확대
+  Ctrl + 왼쪽 드래그 (또는 휠 버튼
+   누른 채 드래그) = 이동
+  0 키, [화면 맞춤] = 원래 크기
+  슬라이스를 넘겨도 확대 유지
+
 ■ MicroDicom
   환자를 바꾸면 자동으로 열림
   M 키 / 버튼 = 지금 환자 다시 열기
@@ -123,6 +130,9 @@ class LabelerApp:
         self.mode: str | None = None         # 병변 입력 중이면 SCHMORL 또는 UNCERTAIN
         self._resume_instance: int | None = None
         self.mdicom = microdicom.MicroDicom()
+        self.zoom = 1.0                      # 화면 맞춤 대비 확대 배율 (1 = 화면에 맞춤)
+        self.zoom_center: tuple[float, float] | None = None   # 확대 시 화면 가운데에 오는 원본 픽셀 좌표
+        self._pan = None
         self._mdicom_job = None
         self._photo = None
         self._drag = None
@@ -301,6 +311,7 @@ class LabelerApp:
         self.bright = tk.DoubleVar(value=0)
         self.contrast = tk.DoubleVar(value=0)
         # [초기화] 버튼을 먼저 붙이고, 밝기·대비 슬라이더는 남는 폭에 맞춰 늘고 줄어듦
+        ttk.Button(row2, text="화면 맞춤 (0)", command=self.reset_zoom).pack(side="right", padx=(6, 0))
         ttk.Button(row2, text="초기화", command=self.reset_window).pack(side="right")
         for text, var in [("밝기", self.bright), ("대비", self.contrast)]:
             ttk.Label(row2, text=text).pack(side="left")
@@ -315,6 +326,12 @@ class LabelerApp:
         c.bind("<ButtonPress-3>", self._on_drag_start)
         c.bind("<B3-Motion>", self._on_drag)
         c.bind("<ButtonRelease-3>", lambda e: setattr(self, "_drag", None))
+        for press, motion in [("<ButtonPress-2>", "<B2-Motion>"),
+                              ("<Control-ButtonPress-1>", "<Control-B1-Motion>")]:
+            c.bind(press, self._on_pan_start)
+            c.bind(motion, self._on_pan)
+        c.bind("<ButtonRelease-2>", lambda e: setattr(self, "_pan", None))
+        c.bind("<Control-ButtonRelease-1>", lambda e: setattr(self, "_pan", None))
 
     @property
     def _level_font(self):
@@ -370,6 +387,8 @@ class LabelerApp:
             self.select_endplate("superior")
         elif k == "d":
             self.select_endplate("inferior")
+        elif k == "0":
+            self.reset_zoom()
         elif k == "m":
             self.open_microdicom(manual=True)
         else:
@@ -483,6 +502,7 @@ class LabelerApp:
 
         self.series = None                       # 이전 환자 영상은 메모리에서 해제
         self.coords = []
+        self.zoom, self.zoom_center = 1.0, None
         self.bright.set(0)
         self.contrast.set(0)
         folder = dataset.series_dir(p.study_id, p.t2_series)
@@ -921,7 +941,56 @@ class LabelerApp:
             return None
         if direction is None:
             direction = -1 if event.delta > 0 else 1   # 휠 아래로 = 다음 슬라이스
+        if event.state & 0x0004:                       # Ctrl + 휠 = 확대/축소
+            x, y = event.x_root - self.canvas.winfo_rootx(), event.y_root - self.canvas.winfo_rooty()
+            self.zoom_at(x, y, 1.25 if direction < 0 else 1 / 1.25)
+            return "break"
         self.step_slice(direction)
+        return "break"
+
+    # ── 확대/이동 ─────────────────────────────────────────
+    ZOOM_MAX = 8.0
+
+    def zoom_at(self, cx: float, cy: float, factor: float) -> None:
+        """화면 (cx, cy) 아래의 원본 위치를 고정한 채 확대/축소."""
+        v = self.view
+        if not v:
+            return
+        new_zoom = min(max(self.zoom * factor, 1.0), self.ZOOM_MAX)
+        if new_zoom == self.zoom:
+            return
+        px = (cx - v["ox"]) / v["sx"] - 0.5            # 마우스 아래 원본 좌표 (이미지 밖이어도 계산)
+        py = (cy - v["oy"]) / v["sy"] - 0.5
+        s_new = self._fit_scale() * new_zoom
+        ox_new = cx - (px + 0.5) * s_new
+        oy_new = cy - (py + 0.5) * s_new
+        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+        self.zoom = new_zoom
+        self.zoom_center = ((cw / 2 - ox_new) / s_new - 0.5, (ch / 2 - oy_new) / s_new - 0.5)
+        if self.zoom == 1.0:
+            self.zoom_center = None
+        self.render()
+
+    def reset_zoom(self) -> None:
+        self.zoom, self.zoom_center = 1.0, None
+        self.render()
+
+    def _fit_scale(self) -> float:
+        v = self.view
+        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+        return min(cw / v["w"], ch / v["h"])
+
+    def _on_pan_start(self, e):
+        self._pan = (e.x, e.y, self.zoom_center)
+        return "break"
+
+    def _on_pan(self, e):
+        if not self._pan or self.zoom <= 1.0 or not self.view:
+            return "break"
+        x0, y0, center = self._pan
+        s = self.view["sx"]
+        self.zoom_center = (center[0] - (e.x - x0) / s, center[1] - (e.y - y0) / s)
+        self.render()
         return "break"
 
     # ── 밝기/대비 ─────────────────────────────────────────
@@ -964,20 +1033,41 @@ class LabelerApp:
             return
 
         h, w = arr.shape
-        scale = min(cw / w, ch / h)
-        dw, dh = max(1, round(w * scale)), max(1, round(h * scale))
-        ox, oy = (cw - dw) / 2, (ch - dh) / 2
         level, width = imaging.adjusted_window(self.level0, self.width0,
                                                self.bright.get(), self.contrast.get())
-        img = imaging.to_display(arr, level, width).resize((dw, dh), Image.Resampling.BILINEAR)
-        self._photo = ImageTk.PhotoImage(img)
-        c.create_image(ox, oy, anchor="nw", image=self._photo, tags="image")
-        self.view = {"ox": ox, "oy": oy, "sx": dw / w, "sy": dh / h, "w": w, "h": h}
+        fit = min(cw / w, ch / h)
+        if self.zoom <= 1.0 or self.zoom_center is None:
+            # 화면 맞춤: 전체 영상을 가운데에
+            dw, dh = max(1, round(w * fit)), max(1, round(h * fit))
+            ox, oy = (cw - dw) / 2, (ch - dh) / 2
+            img = imaging.to_display(arr, level, width).resize((dw, dh), Image.Resampling.BILINEAR)
+            c.create_image(ox, oy, anchor="nw", image=self._keep_photo(img), tags="image")
+            self.view = {"ox": ox, "oy": oy, "sx": dw / w, "sy": dh / h, "w": w, "h": h}
+        else:
+            s = fit * self.zoom
+            # 확대 중심이 영상 밖으로 너무 벗어나지 않게
+            cx_img = min(max(self.zoom_center[0], 0), w - 1)
+            cy_img = min(max(self.zoom_center[1], 0), h - 1)
+            self.zoom_center = (cx_img, cy_img)
+            ox = cw / 2 - (cx_img + 0.5) * s
+            oy = ch / 2 - (cy_img + 0.5) * s
+            # 화면에 보이는 원본 범위만 잘라서 확대 (전체를 키우면 느림)
+            x0 = max(0, int((0 - ox) / s)); x1 = min(w, int((cw - ox) / s) + 2)
+            y0 = max(0, int((0 - oy) / s)); y1 = min(h, int((ch - oy) / s) + 2)
+            crop = imaging.to_display(arr[y0:y1, x0:x1], level, width)
+            crop = crop.resize((max(1, round((x1 - x0) * s)), max(1, round((y1 - y0) * s))),
+                               Image.Resampling.BILINEAR)
+            c.create_image(ox + x0 * s, oy + y0 * s, anchor="nw", image=self._keep_photo(crop), tags="image")
+            self.view = {"ox": ox, "oy": oy, "sx": s, "sy": s, "w": w, "h": h}
         if self.show_levels.get():
             self.draw_levels()
         self.draw_lesions()
         self.draw_mode_banner()
         self._update_info()
+
+    def _keep_photo(self, img):
+        self._photo = ImageTk.PhotoImage(img)          # 참조를 들고 있어야 화면에서 안 사라짐
+        return self._photo
 
     def pixel_to_canvas(self, x: float, y: float) -> tuple[float, float]:
         v = self.view
@@ -1014,7 +1104,8 @@ class LabelerApp:
         else:
             levels = "   레벨 좌표 없음"
         self.info_var.set(f"series {series_id}   슬라이스 {self.slice_idx + 1}/{n}   "
-                          f"밝기 {self.bright.get():+.0f}   대비 {self.contrast.get():+.0f}{levels}{gap}")
+                          f"밝기 {self.bright.get():+.0f}   대비 {self.contrast.get():+.0f}"
+                          f"{f'   확대 {self.zoom:.1f}배' if self.zoom > 1 else ''}{levels}{gap}")
 
     def _pixel_text(self, cx, cy) -> str | None:
         pos = self.canvas_to_pixel(cx, cy)
