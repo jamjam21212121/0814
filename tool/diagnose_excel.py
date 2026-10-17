@@ -84,24 +84,27 @@ def main() -> None:
     out("엑셀 파일 진단 (파일은 수정하지 않습니다)")
     out(f"코드 버전: {config.TOOL_VERSION}, openpyxl {openpyxl.__version__}")
     out()
-    target = config.EXCEL_PATH
-    if not target.exists():
-        out(f"[없음] {target}")
-    else:
-        out(f"■ 결과 엑셀: {target}")
-        err = try_load(target)
-        if err is None:
-            out("  [OK] 정상적으로 열립니다.")
+    for target in (config.EXCEL_PATH, config.FM_EXCEL_PATH):
+        if target == config.FM_EXCEL_PATH and not target.exists():
+            continue                      # 압박골절·전이암 엑셀은 만든 뒤에만 검사
+        if not target.exists():
+            out(f"[없음] {target}")
         else:
-            out(f"  [문제] 열리지 않습니다 → {err}")
-            out("  ── 자세한 오류 ──")
-            try:
-                openpyxl.load_workbook(target)
-            except Exception:
-                for line in traceback.format_exc().splitlines():
-                    out("  " + line)
+            out(f"■ 결과 엑셀: {target}")
+            err = try_load(target)
+            if err is None:
+                out("  [OK] 정상적으로 열립니다.")
+            else:
+                out(f"  [문제] 열리지 않습니다 → {err}")
+                out("  ── 자세한 오류 ──")
+                try:
+                    openpyxl.load_workbook(target)
+                except Exception:
+                    for line in traceback.format_exc().splitlines():
+                        out("  " + line)
+            out()
+            inspect_zip(target)
         out()
-        inspect_zip(target)
 
     out()
     out("■ 백업 파일 (최근 것부터)")

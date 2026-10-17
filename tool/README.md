@@ -4,6 +4,8 @@ RSNA 2024 Lumbar Spine 데이터의 Sagittal T2 영상을 보면서 쉬모를 �
 엑셀 양식(`LumbarDISC_Schmorl_labeling_v0.1.xlsx`)에 기록하는 도구입니다.
 판독은 MicroDicom으로 하고, 이 프로그램은 기록용입니다.
 
+같은 프로그램으로 **압박골절 · 전이암**도 따로 기록할 수 있습니다 → [압박골절 · 전이암 라벨링](#압박골절--전이암-라벨링-run_fracturebat)
+
 ## 폴더 배치
 
 모든 데이터와 결과물은 **`C:\Users\kay85\OneDrive\바탕 화면\연구멘토링`** 안에서만 읽고 씁니다.
@@ -16,6 +18,8 @@ RSNA 2024 Lumbar Spine 데이터의 Sagittal T2 영상을 보면서 쉬모를 �
 ├─ labeling\
 │   ├─ LumbarDISC_Schmorl_labeling_v0.1.xlsx   ← 결과 엑셀
 │   ├─ captures\              ← 애매(Uncertain) 병변 캡처 이미지
+│   ├─ LumbarDISC_Fracture_Metastasis_labeling_v0.1.xlsx ← 압박골절·전이암 결과 엑셀 (따로)
+│   ├─ captures_fm\           ← 압박골절·전이암 애매 캡처
 │   ├─ backup\                ← 엑셀 수정 전 자동 백업 (자동 생성)
 │   ├─ setup_report.txt       ← ⓪ 점검 보고서
 │   └─ sample_selection_log.txt ← ① 추출 기록 (시드, 모집단, 목록)
@@ -51,6 +55,8 @@ RSNA 2024 Lumbar Spine 데이터의 Sagittal T2 영상을 보면서 쉬모를 �
 | 정리 | `fix_remove_rater.bat` | 엑셀 양식에서 rater 열을 지웁니다 (한 번만) | 엑셀 (수정 전 자동 백업) |
 | 문제 진단 | `diagnose_excel.bat` | "엑셀 읽기 실패"가 날 때 원인과 정상 백업을 찾습니다 | 없음 (보고서만 저장) |
 | ②~⑥ 라벨링 | `run_labeler.bat` | 라벨링 프로그램 (단계마다 기능이 추가됨) | 엑셀·캡처 (④부터) |
+| 골절·전이암 준비 | `make_fm_workbook.bat` | 압박골절·전이암 엑셀을 만듭니다 (한 번만, 같은 100명) | 새 엑셀 |
+| 골절·전이암 라벨링 | `run_fracture.bat` | 같은 프로그램을 압박골절·전이암 모드로 실행 | 골절·전이암 엑셀·captures_fm |
 
 엑셀을 수정하는 단계는 **실행 전에 엑셀 파일을 닫아 두세요.** 열려 있으면 저장이 실패하고,
 원본은 그대로 남습니다.
@@ -145,6 +151,40 @@ RSNA 2024 Lumbar Spine 데이터의 Sagittal T2 영상을 보면서 쉬모를 �
     MicroDicom 버전에 따라 폴더가 안 열리면 `["{folder}"]`로 바꿔 보세요.
   - `AUTO_OPEN_MICRODICOM`, `MICRODICOM_DELAY_MS`
 
+## 압박골절 · 전이암 라벨링 (`run_fracture.bat`)
+
+쉬모를과 **같은 프로그램, 같은 조작법**이고, 기록하는 엑셀만 따로입니다. (쉬모를 엑셀은 건드리지 않습니다)
+
+### 처음 한 번: 엑셀 만들기
+`make_fm_workbook.bat` 더블클릭 → `labeling\LumbarDISC_Fracture_Metastasis_labeling_v0.1.xlsx` 생성.
+- `sample_list`는 쉬모를 엑셀의 **같은 100명**을 복사하고, 상태는 모두 '미완료'부터 시작합니다.
+- 이미 파일이 있으면 덮어쓰지 않고 멈춥니다(기록 보호).
+
+### 엑셀 구조 (머리글 색 규칙은 쉬모를과 같음: 회색=프로그램, 초록=수식, 노랑=사람)
+| 시트 | 내용 |
+|---|---|
+| `labels` | 환자 1행. `fracture_L1`~`fracture_S1`, `metastasis_L1`~`metastasis_S1` 12칸 (Normal / Fracture·Metastasis / Uncertain). 초록: `n_fracture`, `n_metastasis`, `n_uncertain`, `patient_fracture`, `patient_metastasis` |
+| `lesions` | 소견 1개 = 1행. `condition`(Compression Fracture / Metastasis), `vertebra`, 대표 좌표 `x`, `y`, `instance_number`, `label`, `capture_file`. 노랑: `review_status`, `final_label`, `note` |
+| `summary` | 판독 수, 골절·전이암 환자 수, 척추체별 개수 (자동 계산) |
+
+상·하종판 구분 없이 **척추체 단위**로만 기록합니다.
+
+### 키 (나머지는 쉬모를과 같음)
+| 키 | 동작 |
+|---|---|
+| **N** | 정상 (12칸 모두 Normal) → 다음 환자 |
+| **F** | 압박골절 입력 |
+| **C** | 전이암 입력 (M 은 MicroDicom 이라 C) |
+| **A** | 애매 — F 또는 C 를 누른 **뒤에** 누름 (예: C → A = 전이암 애매) |
+| 클릭 → **Enter** | 척추체를 클릭하면 척추(L1~S1)를 자동 추천, 맞으면 Enter (틀리면 1~6 으로 고친 뒤 Enter) |
+| **1~6** → 클릭 | 척추를 먼저 고르고 클릭하면 바로 기록 |
+
+- 한 척추체에 골절과 전이암이 함께 있으면 F 로 한 번, C 로 한 번 기록합니다 (lesions 2행).
+- 애매는 `review_status = Pending`, 캡처는 `labeling\captures_fm\{study}_{fracture|metastasis}_{척추}.png`.
+- 이어하기 위치는 `labeling\labeler_state_fm.json` (쉬모를과 따로).
+- T1 보기·확대·Shift+1~5·H·Ctrl+Z·MicroDicom 모두 그대로 됩니다.
+- 자동 추천은 L1~S1 만 합니다. L1 위(T12 등)를 클릭해도 L1 로 추천되니, 그럴 땐 Esc 로 취소하세요.
+
 ## 파일 설명
 
 | 파일 | 역할 |
@@ -158,5 +198,7 @@ RSNA 2024 Lumbar Spine 데이터의 Sagittal T2 영상을 보면서 쉬모를 �
 | `diagnose_excel.py` | 엑셀 파일 진단 (읽기 실패 원인, 정상 백업 찾기) |
 | `workbook.py` | 엑셀 양식(sample_list, labels, lesions) 읽기/쓰기 |
 | `imaging.py` | DICOM 시리즈 읽기, 밝기/대비 계산, 캡처 이미지 |
-| `labeler.py` | 라벨링 프로그램 본체 |
+| `labeler.py` | 라벨링 프로그램 본체 (`--task fm` = 압박골절·전이암) |
+| `tasks.py` | 작업별 설정 (쉬모를 / 압박골절·전이암: 엑셀·캡처 폴더·칸·키) |
+| `make_fm_workbook.py` | 압박골절·전이암 엑셀 양식 만들기 (한 번만) |
 | `microdicom.py` | MicroDicom 실행·이전 창 닫기 (⑥) |

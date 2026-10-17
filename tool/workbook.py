@@ -2,6 +2,7 @@
 """
 LumbarDISC 엑셀 양식 전용 읽기/쓰기.
 (일반적인 엑셀 도우미는 excel_io.py, 이 파일은 양식의 시트·열 이름을 아는 부분)
+쉬모를 / 압박골절·전이암 중 어느 엑셀에 어떤 칸을 쓰는지는 tasks.py 의 Task 가 정합니다.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from openpyxl.formula.translate import Translator
 import config
 import dataset
 import excel_io
+import tasks
 
 
 @dataclass
@@ -48,9 +50,9 @@ def sample_sheet(wb):
     return next((s for s in wb.worksheets if excel_io.norm(s.title) == "samplelist"), None)
 
 
-def read_sample_list() -> list[Patient]:
+def read_sample_list(path=None) -> list[Patient]:
     """sample_list 시트에서 study_id 가 있는 행만 읽어 순서대로 반환."""
-    wb, _ = excel_io.load()
+    wb, _ = excel_io.load(path or config.EXCEL_PATH)
     ws = sample_sheet(wb)
     if ws is None:
         raise RuntimeError(f"sample_list 시트가 없습니다. 시트 목록: {wb.sheetnames}")
@@ -75,9 +77,10 @@ def read_sample_list() -> list[Patient]:
 # ════════════════════════════════════════════════════════
 # ④ labels / lesions / sample_list 기록
 # ════════════════════════════════════════════════════════
-VERTEBRAE = ["L1", "L2", "L3", "L4", "L5", "S1"]
-ENDPLATES = [(v, e) for v in VERTEBRAE for e in ("superior", "inferior") if not (v == "S1" and e == "inferior")]
-NORMAL, SCHMORL, UNCERTAIN = "Normal", "Schmorl", "Uncertain"
+VERTEBRAE = tasks.VERTEBRAE
+ENDPLATES = tasks.ENDPLATES
+NORMAL, UNCERTAIN = tasks.NORMAL, tasks.UNCERTAIN
+SCHMORL = "Schmorl"
 CONDITION = "Schmorl Node"
 PENDING = "Pending"
 
@@ -94,12 +97,13 @@ class Lesion:
     series_id: str
     instance: int
     vertebra: str          # L1 ~ S1
-    endplate: str          # superior / inferior
+    endplate: str          # superior / inferior (압박골절·전이암은 "")
     x: float
     y: float
-    label: str             # Schmorl / Uncertain
+    label: str             # Schmorl·Fracture·Metastasis / Uncertain
     capture_file: str = ""
     labeled_at: str = ""
+    condition: str = CONDITION   # Schmorl Node / Compression Fracture / Metastasis
 
 
 @dataclass
@@ -109,14 +113,18 @@ class Record:
     lesions: list = field(default_factory=list)
     labeled_at: str = ""
 
-    def endplate_values(self) -> dict:
-        """종판 11칸 값: 병변 있으면 Schmorl(우선) 또는 Uncertain, 없으면 Normal."""
-        values = {ep: NORMAL for ep in ENDPLATES}
+    def site_values(self, task) -> dict:
+        """labels 칸 값: 병변 있으면 확실한 값(우선) 또는 Uncertain, 없으면 Normal."""
+        values = {s: NORMAL for s in task.sites}
         for les in self.lesions:
-            key = (les.vertebra, les.endplate)
-            if les.label == SCHMORL or values.get(key) != SCHMORL:
+            key = task.site_of(les)
+            if key in values and (les.label != UNCERTAIN or values[key] in (NORMAL, UNCERTAIN)):
                 values[key] = les.label
         return values
+
+    def endplate_values(self) -> dict:
+        """쉬모를 종판 11칸 값."""
+        return self.site_values(tasks.SCHMORL)
 
     def status(self) -> str:
         if not self.labeled:
@@ -132,11 +140,11 @@ def now_text() -> str:
 
 def _endplate_key(norm_text: str):
     """'endplatel3inferior' → ('L3', 'inferior')"""
-    n = norm_text.replace("endplate", "")
-    for v, e in ENDPLATES:
-        if n.startswith(v.lower()) and e in n:
-            return (v, e)
-    return None
+    return tasks.SCHMORL.site_from_header(norm_text)
+
+
+def site_name(site) -> str:
+    return "_".join(site) if isinstance(site, tuple) else str(site)
 
 
 class SheetMap:
@@ -202,6 +210,11 @@ class SheetMap:
                     cell._style = copy.copy(src._style)
 
 
+def _lesion_number(lesion_id: str) -> int:
+    tail = str(lesion_id).rsplit("_", 1)[-1]
+    return int(tail) if tail.isdigit() else 10 ** 6
+
+
 def _num(s: str):
     return int(s) if str(s).isdigit() else s
 
@@ -209,7 +222,8 @@ def _num(s: str):
 class LabelStore:
     """엑셀 ↔ 프로그램 사이의 판독 결과 저장소."""
 
-    def __init__(self, patients: list):
+    def __init__(self, patients: list, task=None):
+        self.task = task or tasks.SCHMORL
         self.patients = {p.study_id: p for p in patients}
         self.records: dict = {p.study_id: Record() for p in patients}
         self.dirty: set = set()          # 아직 엑셀에 저장되지 못한 환자
@@ -224,37 +238,47 @@ class LabelStore:
                 raise RuntimeError(f"'{name}' 시트가 없습니다. 시트 목록: {wb.sheetnames}")
             return ws
         label_fields = {"study_id": "studyid", "labeled_at": "labeledat"}
+        task = self.task
         labels = SheetMap(wb, sheet("labels"), {**label_fields,
-                                               **{ep: (lambda n, ep=ep: ep if _endplate_key(n) == ep else None)
-                                                  for ep in ENDPLATES}})
-        lesions = SheetMap(wb, sheet("lesions"), {**LESION_FIELDS, "review_status": "reviewstatus"})
+                                               **{s: (lambda n, s=s: s if task.site_from_header(n) == s else None)
+                                                  for s in task.sites}})
+        lesions = SheetMap(wb, sheet("lesions"), {**self.lesion_fields(), "review_status": "reviewstatus"})
         sample = SheetMap(wb, sample_sheet(wb), {"study_id": "studyid", "status": "status",
                                                  "labeled_at": "labeledat"})
         return labels, lesions, sample
 
+    def lesion_fields(self) -> dict:
+        if self.task.uses_endplate:
+            return dict(LESION_FIELDS)
+        return {k: v for k, v in LESION_FIELDS.items() if k != "endplate"}
+
+    def _load(self):
+        return excel_io.load(self.task.excel_path)
+
     def check_template(self) -> list:
         """필요한 열이 있는지, 회색인지 확인. 문제 목록 반환(빈 목록이면 정상)."""
-        wb, _ = excel_io.load()
+        wb, _ = self._load()
         labels, lesions, sample = self._maps(wb)
         problems = []
-        need_labels = ["study_id"] + ENDPLATES
-        need_lesions = [k for k in LESION_FIELDS if k != "capture_file"] + ["capture_file"]
+        need_labels = ["study_id"] + self.task.sites
+        need_lesions = list(self.lesion_fields())
         for name, m, keys in [("labels", labels, need_labels), ("lesions", lesions, need_lesions),
                               ("sample_list", sample, ["study_id", "status"])]:
             for k in m.missing(keys):
-                problems.append(f"[{name}] '{k}' 열을 찾지 못했습니다.")
+                problems.append(f"[{name}] '{site_name(k)}' 열을 찾지 못했습니다.")
             for k in m.not_gray(keys):
                 problems.append(f"[{name}] '{m.col[k]['text']}' 열 머리글이 회색이 아니라 쓰지 않습니다.")
         return problems
 
     # ── 읽기 ──
     def load(self) -> None:
-        wb, _ = excel_io.load()
+        wb, _ = self._load()
         labels, lesions, _ = self._maps(wb)
+        task = self.task
         for r in labels.rows():
             sid = labels.get(r, "study_id")
             sid = dataset._id(sid) if sid not in (None, "") else ""
-            if sid in self.records and any(labels.get(r, ep) not in (None, "") for ep in ENDPLATES):
+            if sid in self.records and any(labels.get(r, s) not in (None, "") for s in task.sites):
                 rec = self.records[sid]
                 rec.labeled = True
                 rec.labeled_at = str(labels.get(r, "labeled_at") or "")
@@ -263,21 +287,26 @@ class LabelStore:
             sid = dataset._id(sid) if sid not in (None, "") else ""
             if sid not in self.records or lesions.get(r, "vertebra") in (None, ""):
                 continue
+            cond = task.condition(str(lesions.get(r, "condition") or "").strip())
             try:
                 les = Lesion(
                     lesion_id=str(lesions.get(r, "lesion_id") or f"{sid}_row{r}"),
                     study_id=sid, series_id=dataset._id(lesions.get(r, "series_id") or ""),
                     instance=int(float(lesions.get(r, "instance") or 0)),
                     vertebra=str(lesions.get(r, "vertebra")).strip().upper(),
-                    endplate=str(lesions.get(r, "endplate") or "").strip().lower(),
+                    endplate=(str(lesions.get(r, "endplate") or "").strip().lower()
+                              if task.uses_endplate else ""),
                     x=float(lesions.get(r, "x") or 0), y=float(lesions.get(r, "y") or 0),
-                    label=str(lesions.get(r, "label") or SCHMORL).strip().capitalize(),
+                    label=str(lesions.get(r, "label") or cond.positive).strip().capitalize(),
                     capture_file=str(lesions.get(r, "capture_file") or ""),
-                    labeled_at=str(lesions.get(r, "labeled_at") or ""))
+                    labeled_at=str(lesions.get(r, "labeled_at") or ""),
+                    condition=cond.excel_name)
             except (TypeError, ValueError):
                 continue
             self.records[sid].lesions.append(les)
             self.records[sid].labeled = True
+        for rec in self.records.values():        # 엑셀 행 순서와 상관없이 기록한 순서(번호 순)로
+            rec.lesions.sort(key=lambda les: _lesion_number(les.lesion_id))
 
     # ── 병변 번호 ──
     def new_lesion_id(self, study_id: str) -> str:
@@ -293,7 +322,7 @@ class LabelStore:
 
     def human_inputs(self, lesion_list) -> dict:
         """병변별로 노란 칸(사람 입력)에 적힌 내용 목록. {lesion_id: ["review_status=Confirmed", ...]}"""
-        wb, _ = excel_io.load()
+        wb, _ = self._load()
         _, lesions, _ = self._maps(wb)
         result = {}
         for lesion in lesion_list:
@@ -319,13 +348,13 @@ class LabelStore:
         if not self.dirty:
             return
         if not self._backed_up:
-            excel_io.backup(tag="session_start")
+            excel_io.backup(self.task.excel_path, tag="session_start")
             self._backed_up = True
-        wb, _ = excel_io.load()
+        wb, _ = self._load()
         labels, lesions, sample = self._maps(wb)
         for sid in [s for s in self.patients if s in self.dirty]:      # 환자 목록 순서대로
             self._sync(sid, labels, lesions, sample)
-        excel_io.save(wb)
+        excel_io.save(wb, self.task.excel_path)
         self.dirty.clear()
 
     def _sync(self, sid, labels, lesions, sample) -> None:
@@ -339,11 +368,11 @@ class LabelStore:
                 r = labels.free_row()
                 labels.ensure_formulas(r)
             labels.put(r, "study_id", _num(sid))
-            for ep, value in rec.endplate_values().items():
-                labels.put(r, ep, value)
+            for site, value in rec.site_values(self.task).items():
+                labels.put(r, site, value)
             labels.put(r, "labeled_at", rec.labeled_at)
         elif r is not None:                       # 판독 취소 → 회색 칸 비우기
-            for key in ["study_id", "labeled_at"] + ENDPLATES:
+            for key in ["study_id", "labeled_at"] + self.task.sites:
                 labels.put(r, key, None)
 
         # lesions: 병변 1개 = 1행
@@ -364,7 +393,8 @@ class LabelStore:
                 r2 = lesions.free_row()
                 lesions.ensure_formulas(r2)
             values = {"lesion_id": les.lesion_id, "study_id": _num(sid), "series_id": _num(les.series_id),
-                      "instance": les.instance, "condition": CONDITION, "vertebra": les.vertebra,
+                      "instance": les.instance, "condition": self.task.condition_of(les).excel_name,
+                      "vertebra": les.vertebra,
                       "endplate": les.endplate, "x": round(les.x, 1), "y": round(les.y, 1),
                       "label": les.label, "capture_file": les.capture_file or None,
                       "labeled_at": les.labeled_at}

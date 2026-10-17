@@ -6,7 +6,7 @@
 from pathlib import Path
 
 # 코드 버전 — 실행 화면 맨 위에 표시됩니다. 최신 코드를 받았는지 확인할 때 보세요.
-TOOL_VERSION = "2026-10-15"
+TOOL_VERSION = "2026-10-17"
 
 # ── 폴더 ────────────────────────────────────────────────
 # 모든 입력(데이터)과 결과물(엑셀, 캡처, 백업, 보고서)은 이 폴더 안에서만 읽고 씁니다.
@@ -122,3 +122,8 @@ MICRODICOM_DELAY_MS = 800          # 환자에 이 시간(ms) 이상 머물러�
 STATUS_DISPLAY = {"애매포함": "확인필요"}
 LEVEL_ZOOM = 3.0                   # Shift+1~5 (레벨로 바로 확대) 때 확대 배율
 LEVEL_ZOOM_ANTERIOR_MM = 12.0      # 확대 중심을 초록점(척추관)에서 앞쪽(척추체 쪽)으로 옮기는 거리(mm)
+
+# ── 압박골절·전이암 작업 (run_fracture.bat) ──────────────────
+FM_EXCEL_PATH = LABELING_DIR / "LumbarDISC_Fracture_Metastasis_labeling_v0.1.xlsx"
+FM_CAPTURE_DIR = LABELING_DIR / "captures_fm"
+FM_STATE_PATH = LABELING_DIR / "labeler_state_fm.json"
