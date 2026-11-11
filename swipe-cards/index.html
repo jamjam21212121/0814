@@ -1,0 +1,874 @@
+<title>스와이프 암기장</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: one-screen app. Home = input panel beside the section list (stacked behind a
+   two-way switch on phones); study = a single index card on a stage with two verdict buttons. */
+:root {
+  --bg: #f1f0f6;
+  --surface: #ffffff;
+  --sunken: #e8e6f0;
+  --ink: #1c192b;
+  --muted: #676380;
+  --line: #d9d6e5;
+  --accent: #5a3ea6;          /* crystal violet */
+  --accent-ink: #ffffff;
+  --accent-soft: #ece7f8;
+  --done: #0c7f63;
+  --done-soft: #dcf2ea;
+  --again: #c2335c;           /* safranin */
+  --again-soft: #fbe3ea;
+  --shadow: 0 1px 2px rgba(28, 25, 43, .06), 0 10px 28px rgba(28, 25, 43, .10);
+  --tag-l: 34%;
+  --tag-bg-l: 93%;
+  --font-text: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131119; --surface: #1e1b29; --sunken: #19161f; --ink: #eceaf5; --muted: #9d99b4;
+    --line: #332f45; --accent: #a88ff2; --accent-ink: #15121d; --accent-soft: #2a2440;
+    --done: #45c9a4; --done-soft: #13352c; --again: #f27a96; --again-soft: #3d1a25;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 28px rgba(0, 0, 0, .45);
+    --tag-l: 78%; --tag-bg-l: 21%;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #131119; --surface: #1e1b29; --sunken: #19161f; --ink: #eceaf5; --muted: #9d99b4;
+  --line: #332f45; --accent: #a88ff2; --accent-ink: #15121d; --accent-soft: #2a2440;
+  --done: #45c9a4; --done-soft: #13352c; --again: #f27a96; --again-soft: #3d1a25;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 28px rgba(0, 0, 0, .45);
+  --tag-l: 78%; --tag-bg-l: 21%;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-text);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+button, textarea, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.app {
+  height: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-block: 12px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+
+/* ---------- top bar ---------- */
+.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.brand { display: flex; align-items: baseline; gap: 8px; font-weight: 700; font-size: 17px; letter-spacing: -.01em; }
+.brand-mark { font-family: var(--font-mono); font-weight: 600; color: var(--accent); }
+.sync { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.sync .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.sync[data-state="cloud"] .dot { background: var(--done); }
+.sync[data-state="local"] .dot, .sync[data-state="error"] .dot { background: var(--again); }
+.notice {
+  border: 1px solid var(--again); background: var(--again-soft); color: var(--ink);
+  border-radius: 10px; padding: 10px 12px; font-size: 13px;
+}
+
+/* ---------- shared pieces ---------- */
+.view { flex: 1; min-height: 0; }
+.tag {
+  font-family: var(--font-mono); font-weight: 600; font-size: 13px; white-space: nowrap;
+  color: hsl(var(--h, 260) 55% var(--tag-l));
+  background: hsl(var(--h, 260) 60% var(--tag-bg-l));
+  padding: 2px 7px; border-radius: 6px;
+}
+.btn {
+  border: 1px solid var(--line); background: var(--surface); border-radius: 10px;
+  padding: 8px 14px; font-weight: 500; font-size: 14px; min-height: 40px;
+}
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn.primary:disabled { opacity: .45; cursor: not-allowed; }
+.btn.quiet { border-color: transparent; background: transparent; color: var(--muted); }
+.btn.quiet:hover { color: var(--ink); background: var(--sunken); }
+.btn.danger { border-color: var(--again); color: var(--again); }
+h2 { font-size: 15px; font-weight: 600; margin: 0; }
+code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken); padding: 1px 5px; border-radius: 4px; }
+
+/* ---------- home ---------- */
+.home { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--sunken); border-radius: 12px; padding: 4px; gap: 4px; }
+.seg button { border: 0; background: transparent; border-radius: 9px; padding: 8px; font-weight: 600; color: var(--muted); min-height: 40px; }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(28, 25, 43, .12); }
+.panels { display: grid; gap: 20px; align-items: start; }
+.panel { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.hint { margin: 0; color: var(--muted); font-size: 13px; }
+#addInput {
+  width: 100%; min-height: 220px; resize: vertical;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 14px; font-size: 15px; line-height: 1.6;
+}
+#addInput::placeholder { color: var(--muted); opacity: .75; }
+.preview { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 26px; font-size: 13px; color: var(--muted); }
+.preview .note { flex-basis: 100%; }
+.add-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.kbd { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+
+.decks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.deck { display: flex; align-items: stretch; gap: 6px; }
+.deck-main {
+  flex: 1; min-width: 0; text-align: left;
+  display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+}
+.deck-main:hover { border-color: var(--accent); }
+.deck-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.deck-left { font-family: var(--font-mono); font-weight: 600; font-size: 22px; line-height: 1; font-variant-numeric: tabular-nums; }
+.deck-left small { font-family: var(--font-text); font-weight: 500; font-size: 12px; color: var(--muted); margin-left: 4px; }
+.deck-meta { grid-column: 1 / -1; display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.deck-meta .m-again { color: var(--again); font-weight: 600; }
+.bar { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--sunken); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--done); border-radius: 2px; }
+.deck-list { flex: none; align-self: stretch; }
+.deck.all .deck-main { background: var(--accent-soft); border-color: transparent; }
+.empty {
+  border: 1px dashed var(--line); border-radius: 12px; padding: 22px 18px;
+  color: var(--muted); font-size: 14px; display: flex; flex-direction: column; gap: 8px;
+}
+.empty strong { color: var(--ink); font-size: 15px; }
+
+@media (max-width: 859px) {
+  .home[data-tab="study"] #addPanel { display: none; }
+  .home[data-tab="add"] #deckPanel { display: none; }
+}
+@media (min-width: 860px) {
+  .seg { display: none; }
+  .panels { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 28px; }
+  #addInput { min-height: 320px; }
+}
+
+/* ---------- study ---------- */
+.study { display: flex; flex-direction: column; gap: 12px; }
+.bar-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bar-top .grow { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.remain { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.switch { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); min-height: 40px; cursor: pointer; }
+.switch input { width: 18px; height: 18px; accent-color: var(--accent); margin: 0; }
+
+.stage { flex: 1; min-height: 0; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; }
+.stage > * { grid-area: 1 / 1; }
+.card {
+  width: 100%; max-width: 560px; height: 100%; max-height: 540px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 18px;
+  box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 12px; padding: 18px;
+  position: relative; touch-action: pan-y; user-select: none; -webkit-user-select: none;
+  will-change: transform;
+}
+.card.ghost { box-shadow: none; transform: translateY(10px) scale(.95); opacity: .6; }
+.card.enter { animation: enter .18s ease-out; }
+@keyframes enter { from { transform: translateY(8px) scale(.97); opacity: .4; } to { transform: none; opacity: 1; } }
+.card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.again-badge { font-size: 12px; font-weight: 600; color: var(--again); background: var(--again-soft); padding: 2px 8px; border-radius: 999px; }
+.card-scroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
+.card-title { margin: 0; font-size: 24px; font-weight: 700; line-height: 1.3; letter-spacing: -.015em; text-wrap: balance; overflow-wrap: anywhere; }
+.card-body { margin: 0; font-size: 17px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; border-top: 1px solid var(--line); padding-top: 14px; width: 100%; }
+.reveal {
+  width: 100%; border: 1px dashed var(--line); background: var(--sunken); color: var(--muted);
+  border-radius: 12px; padding: 18px; font-size: 14px; font-weight: 500;
+}
+.copy {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); background: var(--surface); border-radius: 999px;
+  padding: 7px 14px; font-size: 13px; font-weight: 600; min-height: 38px;
+}
+.copy:hover { border-color: var(--accent); color: var(--accent); }
+.copy svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.copy.ok { border-color: var(--done); color: var(--done); }
+.stamp {
+  position: absolute; top: 16px; font-weight: 700; font-size: 15px; letter-spacing: .04em;
+  padding: 4px 12px; border-radius: 8px; border: 2px solid currentColor; opacity: 0; pointer-events: none;
+  background: var(--surface);
+}
+.stamp-done { right: 16px; color: var(--done); transform: rotate(8deg); }
+.stamp-again { left: 16px; color: var(--again); transform: rotate(-8deg); }
+
+.actions { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; max-width: 560px; width: 100%; margin: 0 auto; }
+.act { border: 0; border-radius: 14px; padding: 12px 10px; font-weight: 700; font-size: 16px; min-height: 54px; display: flex; flex-direction: column; align-items: center; line-height: 1.2; }
+.act small { font-weight: 500; font-size: 11px; opacity: .8; }
+.act.done { background: var(--done-soft); color: var(--done); }
+.act.again { background: var(--again-soft); color: var(--again); }
+.act:active { transform: scale(.98); }
+.undo { align-self: center; }
+.undo:disabled { opacity: .35; cursor: default; }
+
+.finish { text-align: center; display: flex; flex-direction: column; gap: 14px; align-items: center; max-width: 420px; padding: 24px 8px; }
+.finish h3 { margin: 0; font-size: 22px; font-weight: 700; text-wrap: balance; }
+.finish p { margin: 0; color: var(--muted); }
+.finish .row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+
+/* ---------- list ---------- */
+.list { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+.rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.row { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.row-text { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.row-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.row-foot .sp { flex: 1; }
+.row-foot .btn { min-height: 34px; padding: 4px 10px; font-size: 13px; }
+.st { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--sunken); color: var(--muted); }
+.st-again { background: var(--again-soft); color: var(--again); }
+.st-done { background: var(--done-soft); color: var(--done); }
+.row textarea { width: 100%; min-height: 96px; resize: vertical; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; line-height: 1.6; }
+
+/* ---------- toast ---------- */
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  max-width: min(92vw, 420px);
+  background: var(--ink); color: var(--bg); border-radius: 999px; padding: 9px 16px;
+  font-size: 13px; font-weight: 500; text-align: center;
+  opacity: 0; pointer-events: none; transition: opacity .18s; z-index: 20;
+}
+.toast.show { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .card.enter { animation: none; }
+  .toast { transition: none; }
+}
+</style>
+
+<div class="app">
+  <header class="top">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">[ ]</span><span>스와이프 암기장</span></div>
+    <div class="sync" id="sync" data-state="connecting"><span class="dot"></span><span id="syncText">연결 중</span></div>
+  </header>
+  <div class="notice" id="notice" role="status" hidden></div>
+
+  <!-- HOME -->
+  <main class="view home" id="home" data-tab="study">
+    <nav class="seg" aria-label="화면 전환">
+      <button type="button" id="segStudy" aria-pressed="true">공부</button>
+      <button type="button" id="segAdd" aria-pressed="false">추가</button>
+    </nav>
+    <div class="panels">
+      <section class="panel" id="addPanel" aria-labelledby="addTitle">
+        <h2 id="addTitle">카드 추가</h2>
+        <p class="hint">한 줄에 카드 하나. 맨 앞 <code>[태그]</code>가 섹션이 되고, <code> - </code> 앞은 제목, 뒤는 내용입니다.</p>
+        <textarea id="addInput" spellcheck="false" aria-label="추가할 카드" placeholder="[Micro] Lepromin test - 항원 피내 주사 후 3~4주 판독, 결절 형성 = 양성 → Th1 작동 → tuberculoid&#10;[Cardio] ..."></textarea>
+        <div class="preview" id="addPreview" aria-live="polite"></div>
+        <div class="add-row">
+          <button type="button" class="btn primary" id="addSave" disabled>카드 추가</button>
+          <span class="kbd">Ctrl + Enter</span>
+        </div>
+      </section>
+      <section class="panel" id="deckPanel" aria-labelledby="deckTitle">
+        <h2 id="deckTitle">섹션</h2>
+        <ul class="decks" id="decks"></ul>
+        <div class="empty" id="deckEmpty"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- STUDY -->
+  <main class="view study" id="study" hidden>
+    <div class="bar-top">
+      <button type="button" class="btn quiet" id="studyBack">← 섹션</button>
+      <div class="grow"><span class="tag" id="studyTag"></span><span class="remain" id="studyRemain"></span></div>
+      <label class="switch" for="hideToggle"><input type="checkbox" id="hideToggle">내용 가리기</label>
+    </div>
+    <div class="stage" id="stage">
+      <div class="card ghost" id="ghost" aria-hidden="true"></div>
+      <article class="card" id="card" aria-live="polite">
+        <span class="stamp stamp-done" id="stampDone" aria-hidden="true">완료</span>
+        <span class="stamp stamp-again" id="stampAgain" aria-hidden="true">다시</span>
+        <div class="card-head"><span class="tag" id="cardTag"></span><span class="again-badge" id="cardAgain" hidden></span></div>
+        <div class="card-scroll" id="cardScroll">
+          <h3 class="card-title" id="cardTitle"></h3>
+          <p class="card-body" id="cardBody"></p>
+          <button type="button" class="reveal" id="revealBtn">눌러서 내용 보기</button>
+          <button type="button" class="copy" id="copyBtn">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
+            <span id="copyLabel">복사</span>
+          </button>
+        </div>
+      </article>
+      <div class="finish" id="finish" hidden>
+        <h3 id="finishTitle"></h3>
+        <p id="finishText"></p>
+        <div class="row">
+          <button type="button" class="btn primary" id="finishReset">완료한 카드 다시 공부</button>
+          <button type="button" class="btn" id="finishHome">섹션 목록</button>
+        </div>
+      </div>
+    </div>
+    <div class="actions" id="actions">
+      <button type="button" class="act done" id="btnDone">← 완료<small>왼쪽으로 밀기</small></button>
+      <button type="button" class="btn quiet undo" id="btnUndo" disabled>되돌리기</button>
+      <button type="button" class="act again" id="btnAgain">다시 →<small>오른쪽으로 밀기</small></button>
+    </div>
+  </main>
+
+  <!-- LIST -->
+  <main class="view list" id="list" hidden>
+    <div class="bar-top">
+      <button type="button" class="btn quiet" id="listBack">← 섹션</button>
+      <div class="grow"><span class="tag" id="listTag"></span><span class="remain" id="listCount"></span></div>
+      <button type="button" class="btn" id="listReset">전체 다시 공부</button>
+    </div>
+    <ul class="rows" id="rows"></ul>
+  </main>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const LS = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } },
+    del(k) { try { localStorage.removeItem(k); } catch (e) { /* storage unavailable */ } },
+  };
+
+  /* ---------- parsing ---------- */
+  const UNTAGGED = '미분류';
+  const ALL = '*';
+  function parseLine(text) {
+    const m = /^\s*\[([^\]\n]+)\]\s*([\s\S]*)$/.exec(text);
+    const tag = (m ? m[1].trim() : '') || UNTAGGED;
+    const rest = (m ? m[2] : text).trim();
+    const sep = /\s[-–—]\s/.exec(rest);
+    let title = rest, body = '';
+    if (sep) { title = rest.slice(0, sep.index).trim(); body = rest.slice(sep.index + sep[0].length).trim(); }
+    return { tag, key: tag.toLowerCase(), title, body };
+  }
+  const norm = (s) => s.replace(/\s+/g, ' ').trim();
+  // tag hues stay between green and violet so no section reads as the red "다시" state
+  function hue(key) { let h = 7; for (const ch of key) h = (h * 31 + ch.codePointAt(0)) % 160; return 140 + h; }
+  function setTag(el, label, key) { el.textContent = '[' + label + ']'; el.style.setProperty('--h', hue(key)); }
+  function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+  function newId() { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+
+  /* ---------- state ---------- */
+  const state = {
+    cards: new Map(),          // id -> {id, text, status, again, created, p}
+    mode: 'connecting',        // connecting | cloud | local
+    loaded: false,
+    view: 'home',
+    session: null,             // {key, label, queue: [id]}
+    undo: [],
+    revealed: false,
+    hide: LS.get('sc-hide', true) !== false,
+    listKey: null,
+    editing: null,
+    confirmDel: null,
+  };
+  const STATUSES = new Set(['new', 'again', 'done']);
+  function makeCard(id, v) {
+    return {
+      id, text: String(v.text),
+      status: STATUSES.has(v.status) ? v.status : 'new',
+      again: Number(v.again) || 0,
+      created: Number(v.created) || 0,
+      p: parseLine(String(v.text)),
+    };
+  }
+  const bodyOf = (c) => ({ text: c.text, status: c.status, again: c.again, created: c.created });
+
+  /* ---------- storage ---------- */
+  let col = null;
+  let loadTimer = null;
+  const chains = new Map();
+  let active = 0;
+  const waiters = [];
+  async function slot() { if (active >= 4) await new Promise((r) => waiters.push(r)); active++; }
+  function release() { active--; const w = waiters.shift(); if (w) w(); }
+  async function withRetry(fn) {
+    try { return await fn(); } catch (e) {
+      if (e && e.code === 'unavailable') { await sleep(400 + Math.random() * 600); return fn(); }
+      throw e;
+    }
+  }
+  // One write at a time per card, at most four in flight overall.
+  function enqueue(id, fn) {
+    const run = async () => { await slot(); try { await withRetry(fn); } finally { release(); } };
+    const p = (chains.get(id) || Promise.resolve()).then(run);
+    chains.set(id, p.catch(onWriteError));
+    return p;
+  }
+  function onWriteError(e) {
+    const code = e && e.code;
+    if (code === 'quota_exceeded') toast('저장 공간이 가득 찼습니다. 안 쓰는 카드를 지운 뒤 다시 시도해 주세요.');
+    else if (code === 'revoked' || code === 'not_granted') toast('이 화면에서는 저장할 수 없습니다. 페이지를 다시 열어 주세요.');
+    else toast('저장하지 못했습니다. 연결을 확인하고 다시 시도해 주세요.');
+  }
+  function saveLocal() { LS.set('sc-local', [...state.cards.values()].map((c) => Object.assign({ id: c.id }, bodyOf(c)))); }
+  function persistNew(c) {
+    if (state.mode === 'cloud') return enqueue(c.id, () => col.doc(c.id).set(bodyOf(c)));
+    state.cards.set(c.id, c); saveLocal(); return Promise.resolve();
+  }
+  function persistPatch(c, patch) {
+    if (state.mode === 'cloud') return enqueue(c.id, () => col.doc(c.id).update(patch));
+    saveLocal(); return Promise.resolve();
+  }
+  function persistDelete(id) {
+    state.cards.delete(id);
+    if (state.mode === 'cloud') return enqueue(id, () => col.doc(id).delete());
+    saveLocal(); return Promise.resolve();
+  }
+
+  function onSnap(snap) {
+    const next = new Map();
+    for (const d of snap.docs) {
+      const v = d.data();
+      if (!v || typeof v.text !== 'string') continue;
+      next.set(d.id, makeCard(d.id, v));
+    }
+    state.cards = next;
+    state.loaded = true;
+    if (!snap.metadata || !snap.metadata.fromCache) {
+      clearTimeout(loadTimer);
+      setSync('cloud', '동기화됨');
+      setNotice('');
+    }
+    refresh(true);
+  }
+  function onSnapError() {
+    clearTimeout(loadTimer);
+    state.loaded = true;
+    setSync('error', '동기화 끊김');
+    setNotice('동기화 연결이 끊겼습니다. 이 화면을 닫았다가 다시 열면 이어집니다.');
+    refresh(true);
+  }
+  async function uploadLocal() {
+    const pending = LS.get('sc-local', []);
+    if (!Array.isArray(pending) || !pending.length) return;
+    let ok = 0;
+    const left = [];
+    for (const raw of pending) {
+      if (!raw || typeof raw.text !== 'string' || !raw.id) continue;
+      const c = makeCard(String(raw.id), raw);
+      try { await enqueue(c.id, () => col.doc(c.id).set(bodyOf(c))); ok++; } catch (e) { left.push(raw); }
+    }
+    if (left.length) LS.set('sc-local', left); else LS.del('sc-local');
+    if (ok) toast('이 기기에만 있던 카드 ' + ok + '개를 올렸습니다.');
+  }
+  function startLocal() {
+    state.mode = 'local';
+    state.loaded = true;
+    const arr = LS.get('sc-local', []);
+    if (Array.isArray(arr)) for (const raw of arr) if (raw && typeof raw.text === 'string' && raw.id) state.cards.set(String(raw.id), makeCard(String(raw.id), raw));
+    setSync('local', '이 기기에만 저장');
+    setNotice('동기화에 연결하지 못했습니다. 지금 추가하는 카드는 이 기기에만 저장되고, 다음에 연결되면 자동으로 올라갑니다.');
+    refresh(true);
+  }
+  async function init() {
+    let db = null;
+    try { db = window.claude && typeof window.claude.use === 'function' ? await window.claude.use('db') : null; } catch (e) { db = null; }
+    if (!db) { startLocal(); return; }
+    col = db.collection('cards');
+    state.mode = 'cloud';
+    setSync('connecting', '동기화 확인 중');
+    loadTimer = setTimeout(() => setNotice('아직 저장소에 연결하지 못했습니다. 연결되면 자동으로 이어집니다.'), 10000);
+    col.onSnapshot(onSnap, onSnapError);
+    updateAddPreview();
+    uploadLocal();
+  }
+
+  /* ---------- small UI helpers ---------- */
+  function setSync(st, text) { $('sync').dataset.state = st; $('syncText').textContent = text; }
+  function setNotice(text) { const n = $('notice'); n.textContent = text; n.hidden = !text; }
+  let toastTimer = null;
+  function toast(text) {
+    const t = $('toast'); t.textContent = text; t.classList.add('show');
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+  }
+  function show(view) {
+    state.view = view;
+    for (const v of ['home', 'study', 'list']) $(v).hidden = v !== view;
+    if (view === 'home') renderDecks();
+  }
+  function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+
+  function sections() {
+    const m = new Map();
+    for (const c of state.cards.values()) {
+      let s = m.get(c.p.key);
+      if (!s) { s = { key: c.p.key, label: c.p.tag, total: 0, fresh: 0, again: 0, done: 0 }; m.set(c.p.key, s); }
+      s.total++;
+      if (c.status === 'done') s.done++; else if (c.status === 'again') s.again++; else s.fresh++;
+    }
+    return [...m.values()].sort((a, b) => a.label.localeCompare(b.label, 'ko'));
+  }
+  const inSection = (c, key) => key === ALL || c.p.key === key;
+  function sectionLabel(key) {
+    if (key === ALL) return '전체';
+    for (const c of state.cards.values()) if (c.p.key === key) return c.p.tag;
+    return key;
+  }
+
+  // Called after every data change. fromStore = the change came from the store, not from this view's own action.
+  function refresh(fromStore) {
+    updateAddPreview();
+    if (state.view === 'home') renderDecks();
+    else if (state.view === 'list') { if (!state.editing || !state.cards.has(state.editing)) { state.editing = null; renderList(); } }
+    else if (state.view === 'study') {
+      const s = state.session;
+      const cur = s.queue[0];
+      s.queue = s.queue.filter((id) => state.cards.has(id));
+      if (!fromStore || s.queue[0] !== cur || !s.queue.length) renderStudy(); else renderStudyMeta();
+    }
+  }
+
+  /* ---------- home: sections ---------- */
+  function renderDecks() {
+    const ul = $('decks'), empty = $('deckEmpty');
+    ul.textContent = '';
+    const secs = sections();
+    if (!secs.length) {
+      empty.hidden = false; empty.textContent = '';
+      if (!state.loaded) { empty.append(el('strong', '', '카드를 불러오는 중입니다')); }
+      else {
+        empty.append(el('strong', '', '아직 카드가 없습니다'));
+        const p = el('span');
+        p.append('추가 칸에 ', el('code', '', '[Micro] Lepromin test - …'), ' 처럼 한 줄씩 적으면 태그별 섹션이 여기에 생깁니다.');
+        empty.append(p);
+      }
+      return;
+    }
+    empty.hidden = true;
+    if (secs.length > 1) {
+      const t = secs.reduce((a, s) => ({ total: a.total + s.total, fresh: a.fresh + s.fresh, again: a.again + s.again, done: a.done + s.done }), { total: 0, fresh: 0, again: 0, done: 0 });
+      ul.append(deckRow(Object.assign({ key: ALL, label: '전체 섞기' }, t), true));
+    }
+    for (const s of secs) ul.append(deckRow(s, false));
+  }
+  function deckRow(s, isAll) {
+    const li = el('li', 'deck' + (isAll ? ' all' : ''));
+    const main = el('button', 'deck-main'); main.type = 'button'; main.dataset.study = s.key;
+    const name = el('span', 'deck-name');
+    if (isAll) name.append(el('strong', '', s.label)); else { const t = el('span', 'tag'); setTag(t, s.label, s.key); name.append(t); }
+    const left = el('span', 'deck-left', String(s.fresh + s.again)); left.append(el('small', '', '남음'));
+    const meta = el('span', 'deck-meta');
+    meta.append(el('span', '', '전체 ' + s.total), el('span', '', '완료 ' + s.done));
+    if (s.again) meta.append(el('span', 'm-again', '다시 ' + s.again));
+    const bar = el('span', 'bar'); const fill = el('i'); fill.style.width = (s.total ? Math.round((s.done / s.total) * 100) : 0) + '%'; bar.append(fill);
+    main.append(name, left, meta, bar);
+    main.setAttribute('aria-label', s.label + ' 공부 시작, 남은 카드 ' + (s.fresh + s.again) + '개');
+    li.append(main);
+    if (!isAll) { const b = el('button', 'btn deck-list', '목록'); b.type = 'button'; b.dataset.list = s.key; b.setAttribute('aria-label', s.label + ' 카드 목록'); li.append(b); }
+    return li;
+  }
+  $('decks').addEventListener('click', (e) => {
+    const s = e.target.closest('[data-study]'); if (s) return startSession(s.dataset.study);
+    const l = e.target.closest('[data-list]'); if (l) { state.listKey = l.dataset.list; state.editing = null; show('list'); renderList(); }
+  });
+  function setTab(tab) {
+    $('home').dataset.tab = tab;
+    $('segStudy').setAttribute('aria-pressed', String(tab === 'study'));
+    $('segAdd').setAttribute('aria-pressed', String(tab === 'add'));
+  }
+  $('segStudy').addEventListener('click', () => setTab('study'));
+  $('segAdd').addEventListener('click', () => setTab('add'));
+
+  /* ---------- home: add ---------- */
+  const addInput = $('addInput');
+  function parseInput() {
+    const existing = new Set([...state.cards.values()].map((c) => norm(c.text)));
+    const seen = new Set();
+    const fresh = []; let dup = 0, untagged = 0;
+    for (const raw of addInput.value.split(/\r?\n/)) {
+      const text = raw.trim();
+      if (!text) continue;
+      const n = norm(text);
+      if (existing.has(n) || seen.has(n)) { dup++; continue; }
+      seen.add(n);
+      const p = parseLine(text);
+      if (!p.title) continue;
+      if (p.tag === UNTAGGED && !/^\s*\[/.test(text)) untagged++;
+      fresh.push({ text, p });
+    }
+    return { fresh, dup, untagged };
+  }
+  let saving = false;
+  function updateAddPreview() {
+    const { fresh, dup, untagged } = parseInput();
+    const box = $('addPreview'); box.textContent = '';
+    const counts = new Map();
+    for (const f of fresh) { const c = counts.get(f.p.key) || { label: f.p.tag, n: 0 }; c.n++; counts.set(f.p.key, c); }
+    for (const [key, c] of counts) { const t = el('span', 'tag'); setTag(t, c.label, key); t.textContent += ' ' + c.n; box.append(t); }
+    if (untagged) box.append(el('span', 'note', '태그 없는 줄 ' + untagged + '개는 [' + UNTAGGED + '] 섹션으로 들어갑니다.'));
+    if (dup) box.append(el('span', 'note', '이미 있는 카드 ' + dup + '개는 건너뜁니다.'));
+    const btn = $('addSave');
+    btn.disabled = saving || !fresh.length || state.mode === 'connecting';
+    if (!saving) btn.textContent = fresh.length ? '카드 ' + fresh.length + '개 추가' : '카드 추가';
+  }
+  async function saveInput() {
+    if (saving || state.mode === 'connecting') return;
+    const { fresh } = parseInput();
+    if (!fresh.length) return;
+    saving = true;
+    const btn = $('addSave'); btn.disabled = true; btn.textContent = '저장 중…';
+    const now = Date.now();
+    const cards = fresh.map((f, i) => ({ id: newId(), text: f.text, status: 'new', again: 0, created: now + i, p: f.p }));
+    const results = await Promise.allSettled(cards.map((c) => persistNew(c)));
+    const failed = cards.filter((_, i) => results[i].status === 'rejected');
+    saving = false;
+    addInput.value = failed.map((c) => c.text).join('\n');
+    LS.set('sc-draft', addInput.value);
+    const ok = cards.length - failed.length;
+    if (ok) toast(failed.length ? ok + '개 추가됨. 저장 못 한 ' + failed.length + '개는 입력 칸에 남겼습니다.' : '카드 ' + ok + '개를 추가했습니다.');
+    refresh(false);
+  }
+  addInput.value = LS.get('sc-draft', '') || '';
+  addInput.addEventListener('input', () => { LS.set('sc-draft', addInput.value); updateAddPreview(); });
+  addInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveInput(); } });
+  $('addSave').addEventListener('click', saveInput);
+
+  /* ---------- study ---------- */
+  const card = $('card'), stage = $('stage');
+  let busy = false;
+  function startSession(key) {
+    const ids = [...state.cards.values()].filter((c) => inSection(c, key) && c.status !== 'done').map((c) => c.id);
+    state.session = { key, label: sectionLabel(key), queue: shuffle(ids) };
+    state.undo = [];
+    show('study');
+    renderStudy();
+  }
+  function renderStudyMeta() {
+    const s = state.session;
+    if (s.key === ALL) { $('studyTag').textContent = '전체'; $('studyTag').style.setProperty('--h', 260); } else setTag($('studyTag'), s.label, s.key);
+    $('studyRemain').textContent = s.queue.length ? '남은 카드 ' + s.queue.length + '개' : '';
+    $('btnUndo').disabled = !state.undo.length;
+    $('ghost').hidden = s.queue.length < 2;
+  }
+  function renderStudy() {
+    const s = state.session;
+    s.queue = s.queue.filter((id) => state.cards.has(id));
+    renderStudyMeta();
+    const c = state.cards.get(s.queue[0]);
+    const finished = !c;
+    card.hidden = finished; $('finish').hidden = !finished;
+    $('btnDone').disabled = $('btnAgain').disabled = finished;
+    if (finished) {
+      const all = [...state.cards.values()].filter((x) => inSection(x, s.key));
+      $('finishTitle').textContent = all.length ? '이 섹션을 다 봤습니다' : '이 섹션에 카드가 없습니다';
+      $('finishText').textContent = all.length ? '카드 ' + all.length + '개가 모두 완료 상태입니다. 다시 돌리고 싶으면 완료한 카드를 되돌리세요.' : '섹션 목록으로 돌아가 카드를 추가해 주세요.';
+      $('finishReset').hidden = !all.length;
+      return;
+    }
+    state.revealed = false;
+    setTag($('cardTag'), c.p.tag, c.p.key);
+    const ab = $('cardAgain'); ab.hidden = !c.again; ab.textContent = '다시 ' + c.again + '회';
+    $('cardTitle').textContent = c.p.title;
+    $('cardBody').textContent = c.p.body;
+    paintReveal();
+    $('copyLabel').textContent = '복사'; $('copyBtn').classList.remove('ok');
+    $('cardScroll').scrollTop = 0;
+    card.style.transition = ''; card.style.transform = ''; card.style.opacity = '';
+    $('stampDone').style.opacity = $('stampAgain').style.opacity = 0;
+    card.classList.remove('enter'); void card.offsetWidth; card.classList.add('enter');
+  }
+  function paintReveal() {
+    const c = state.cards.get(state.session.queue[0]);
+    const hasBody = !!(c && c.p.body);
+    const showBody = hasBody && (!state.hide || state.revealed);
+    $('cardBody').hidden = !showBody;
+    $('revealBtn').hidden = !hasBody || showBody;
+  }
+  function toggleReveal() { if (!state.hide) return; state.revealed = !state.revealed; paintReveal(); }
+  function decide(kind) {
+    const s = state.session; const id = s.queue[0]; const c = state.cards.get(id);
+    if (!c) return;
+    state.undo.push({ id, status: c.status, again: c.again });
+    s.queue.shift();
+    if (kind === 'done') { c.status = 'done'; persistPatch(c, { status: 'done' }); }
+    else {
+      c.status = 'again'; c.again += 1; persistPatch(c, { status: 'again', again: c.again });
+      // comes back a few cards later, not straight away
+      s.queue.splice(Math.min(s.queue.length, 3 + Math.floor(Math.random() * 3)), 0, id);
+    }
+    renderStudy();
+  }
+  function fly(kind) {
+    if (busy || card.hidden) return;
+    busy = true;
+    const dir = kind === 'done' ? -1 : 1;
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    $(kind === 'done' ? 'stampDone' : 'stampAgain').style.opacity = 1;
+    card.classList.remove('enter');
+    card.style.transition = reduce ? 'opacity .12s' : 'transform .2s ease-in, opacity .2s ease-in';
+    card.style.transform = reduce ? '' : 'translateX(' + dir * 130 + '%) rotate(' + dir * 16 + 'deg)';
+    card.style.opacity = '0';
+    setTimeout(() => { busy = false; decide(kind); }, reduce ? 120 : 200);
+  }
+  function undo() {
+    const u = state.undo.pop(); const s = state.session;
+    if (!u) return;
+    const c = state.cards.get(u.id);
+    if (!c) { renderStudyMeta(); return; }
+    const i = s.queue.indexOf(u.id); if (i >= 0) s.queue.splice(i, 1);
+    s.queue.unshift(u.id);
+    c.status = u.status; c.again = u.again;
+    persistPatch(c, { status: u.status, again: u.again });
+    renderStudy();
+  }
+  async function resetSection(key) {
+    const done = [...state.cards.values()].filter((c) => inSection(c, key) && c.status !== 'new');
+    for (const c of done) { c.status = 'new'; c.again = 0; }
+    await Promise.allSettled(done.map((c) => persistPatch(c, { status: 'new', again: 0 })));
+    return done.length;
+  }
+
+  // swipe: left = 완료, right = 다시
+  let drag = null;
+  function paintDrag(dx) {
+    card.style.transform = 'translateX(' + dx + 'px) rotate(' + dx / 22 + 'deg)';
+    const th = Math.min(120, stage.clientWidth * 0.25);
+    $('stampDone').style.opacity = Math.max(0, Math.min(1, -dx / th));
+    $('stampAgain').style.opacity = Math.max(0, Math.min(1, dx / th));
+  }
+  function settle() {
+    card.style.transition = 'transform .18s ease-out'; card.style.transform = '';
+    $('stampDone').style.opacity = $('stampAgain').style.opacity = 0;
+  }
+  card.addEventListener('pointerdown', (e) => {
+    if (busy || e.button > 0 || e.target.closest('button')) return;
+    drag = { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, dy: 0, on: false, t: performance.now() };
+  });
+  card.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    drag.dx = e.clientX - drag.x; drag.dy = e.clientY - drag.y;
+    if (!drag.on) {
+      if (Math.abs(drag.dx) > 10 && Math.abs(drag.dx) > Math.abs(drag.dy) * 1.2) {
+        drag.on = true;
+        try { card.setPointerCapture(e.pointerId); } catch (err) { /* capture is optional */ }
+        card.classList.remove('enter'); card.style.transition = 'none';
+      } else return;
+    }
+    paintDrag(drag.dx);
+  });
+  card.addEventListener('pointerup', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const d = drag; drag = null;
+    if (!d.on) { if (Math.abs(d.dx) < 8 && Math.abs(d.dy) < 8) toggleReveal(); return; }
+    const th = Math.min(120, stage.clientWidth * 0.25);
+    const v = d.dx / Math.max(1, performance.now() - d.t);
+    if (d.dx <= -th || (v < -0.6 && d.dx < -40)) fly('done');
+    else if (d.dx >= th || (v > 0.6 && d.dx > 40)) fly('again');
+    else settle();
+  });
+  card.addEventListener('pointercancel', () => { if (drag && drag.on) settle(); drag = null; });
+
+  async function copyCurrent() {
+    const c = state.cards.get(state.session.queue[0]);
+    if (!c) return;
+    let ok = false;
+    try { await navigator.clipboard.writeText(c.text); ok = true; } catch (e) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = c.text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.append(ta); ta.select(); ok = document.execCommand('copy'); ta.remove();
+      } catch (e2) { ok = false; }
+    }
+    if (ok) { $('copyLabel').textContent = '복사됨'; $('copyBtn').classList.add('ok'); toast('문장을 복사했습니다.'); }
+    else toast('여기서는 복사가 막혀 있습니다. 목록 화면에서 문장을 길게 눌러 복사해 주세요.');
+  }
+  $('copyBtn').addEventListener('click', copyCurrent);
+  $('revealBtn').addEventListener('click', toggleReveal);
+  $('btnDone').addEventListener('click', () => fly('done'));
+  $('btnAgain').addEventListener('click', () => fly('again'));
+  $('btnUndo').addEventListener('click', undo);
+  $('studyBack').addEventListener('click', () => show('home'));
+  $('finishHome').addEventListener('click', () => show('home'));
+  $('finishReset').addEventListener('click', async () => { const key = state.session.key; await resetSection(key); startSession(key); });
+  const hideToggle = $('hideToggle');
+  hideToggle.checked = state.hide;
+  hideToggle.addEventListener('change', () => { state.hide = hideToggle.checked; LS.set('sc-hide', state.hide); state.revealed = false; if (state.view === 'study') paintReveal(); });
+
+  document.addEventListener('keydown', (e) => {
+    if (state.view !== 'study' || e.ctrlKey || e.metaKey || e.altKey) return;
+    const tag = e.target && e.target.tagName;
+    if (tag === 'TEXTAREA' || tag === 'INPUT') return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); fly('done'); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); fly('again'); }
+    else if ((e.key === ' ' || e.key === 'Enter') && tag !== 'BUTTON') { e.preventDefault(); toggleReveal(); }
+    else if (e.key === 'c' || e.key === 'C') copyCurrent();
+    else if (e.key === 'z' || e.key === 'Z') undo();
+    else if (e.key === 'Escape') show('home');
+  });
+
+  /* ---------- list ---------- */
+  const ST_LABEL = { new: '새 카드', again: '다시', done: '완료' };
+  function renderList() {
+    const key = state.listKey;
+    const items = [...state.cards.values()].filter((c) => c.p.key === key).sort((a, b) => b.created - a.created);
+    if (!items.length) { show('home'); return; }
+    setTag($('listTag'), items[items.length - 1].p.tag, key);
+    $('listCount').textContent = '카드 ' + items.length + '개';
+    const ul = $('rows'); ul.textContent = '';
+    for (const c of items) {
+      const li = el('li', 'row'); li.dataset.id = c.id;
+      const foot = el('div', 'row-foot');
+      if (state.editing === c.id) {
+        const ta = el('textarea'); ta.value = c.text; ta.id = 'edit-' + c.id; ta.setAttribute('aria-label', '카드 수정');
+        const save = el('button', 'btn primary', '저장'); save.dataset.act = 'save';
+        const cancel = el('button', 'btn', '취소'); cancel.dataset.act = 'cancel';
+        foot.append(save, cancel);
+        li.append(ta, foot);
+      } else {
+        foot.append(el('span', 'st st-' + c.status, ST_LABEL[c.status] + (c.again ? ' · ' + c.again + '회' : '')), el('span', 'sp'));
+        if (c.status !== 'new') { const r = el('button', 'btn', '다시 공부'); r.dataset.act = 'renew'; foot.append(r); }
+        const ed = el('button', 'btn', '수정'); ed.dataset.act = 'edit';
+        const del = el('button', 'btn' + (state.confirmDel === c.id ? ' danger' : ''), state.confirmDel === c.id ? '정말 삭제' : '삭제'); del.dataset.act = 'delete';
+        foot.append(ed, del);
+        li.append(el('p', 'row-text', c.text), foot);
+      }
+      for (const b of foot.querySelectorAll('button')) b.type = 'button';
+      ul.append(li);
+    }
+  }
+  let delTimer = null;
+  $('rows').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-act]'); if (!b) return;
+    const li = b.closest('.row'); const c = state.cards.get(li.dataset.id); if (!c) return;
+    const act = b.dataset.act;
+    if (act === 'edit') { state.editing = c.id; state.confirmDel = null; renderList(); const ta = $('edit-' + c.id); if (ta) ta.focus(); }
+    else if (act === 'cancel') { state.editing = null; renderList(); }
+    else if (act === 'save') {
+      const text = li.querySelector('textarea').value.replace(/\s*\r?\n\s*/g, ' ').trim();
+      if (!text) { toast('내용이 비어 있습니다.'); return; }
+      state.editing = null;
+      if (text !== c.text) { c.text = text; c.p = parseLine(text); persistPatch(c, { text }); }
+      refresh(false);
+    }
+    else if (act === 'renew') { c.status = 'new'; c.again = 0; persistPatch(c, { status: 'new', again: 0 }); refresh(false); }
+    else if (act === 'delete') {
+      if (state.confirmDel === c.id) { clearTimeout(delTimer); state.confirmDel = null; persistDelete(c.id); toast('카드를 삭제했습니다.'); refresh(false); }
+      else { state.confirmDel = c.id; renderList(); clearTimeout(delTimer); delTimer = setTimeout(() => { state.confirmDel = null; if (state.view === 'list' && !state.editing) renderList(); }, 3000); }
+    }
+  });
+  $('listBack').addEventListener('click', () => show('home'));
+  $('listReset').addEventListener('click', async () => {
+    const n = await resetSection(state.listKey);
+    toast(n ? '카드 ' + n + '개를 새 카드로 되돌렸습니다.' : '되돌릴 카드가 없습니다.');
+    refresh(false);
+  });
+
+  renderDecks();
+  updateAddPreview();
+  init();
+})();
+</script>
