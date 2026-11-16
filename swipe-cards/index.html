@@ -229,6 +229,24 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
 .st-done { background: var(--done-soft); color: var(--done); }
 .row textarea { width: 100%; min-height: 96px; resize: vertical; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; line-height: 1.6; }
 
+/* ---------- today, search, weak deck, in-card edit ---------- */
+.today { margin: 0; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.today b { color: var(--ink); font-weight: 600; }
+#searchInput {
+  width: 100%; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  padding: 9px 12px; font-size: 16px; min-height: 42px;
+}
+#searchInput::placeholder { color: var(--muted); opacity: .75; }
+.deck.weak .deck-main { background: var(--again-soft); border-color: transparent; }
+.deck.weak .deck-left { color: var(--again); }
+.st-due { background: var(--accent-soft); color: var(--accent); }
+.card-edit { width: 100%; display: flex; flex-direction: column; gap: 10px; }
+.card-edit textarea {
+  width: 100%; min-height: 180px; resize: vertical; user-select: text; -webkit-user-select: text;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+  font-size: 16px; line-height: 1.6;
+}
+
 /* ---------- export ---------- */
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 40px; }
 .panel-head .btn { min-height: 36px; padding: 4px 12px; font-size: 13px; }
@@ -286,6 +304,10 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
           <h2 id="deckTitle">섹션</h2>
           <button type="button" class="btn" id="exportOpen" hidden>전체 내보내기</button>
         </div>
+        <p class="today" id="today" hidden></p>
+        <input type="search" id="searchInput" placeholder="카드 검색" aria-label="카드 검색" autocomplete="off" hidden>
+        <p class="hint" id="searchInfo" hidden></p>
+        <ul class="rows" id="searchRows" hidden></ul>
         <ul class="decks" id="decks"></ul>
         <div class="empty" id="deckEmpty"></div>
       </section>
@@ -309,10 +331,21 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
           <h3 class="card-title" id="cardTitle"></h3>
           <p class="card-body" id="cardBody"></p>
           
-          <div class="card-tools">
+          <div class="card-edit" id="cardEditBox" hidden>
+            <textarea id="cardEditText" spellcheck="false" aria-label="카드 수정"></textarea>
+            <div class="card-tools">
+              <button type="button" class="btn primary" id="cardEditSave">저장</button>
+              <button type="button" class="btn" id="cardEditCancel">취소</button>
+            </div>
+          </div>
+          <div class="card-tools" id="cardTools">
             <button type="button" class="copy" id="copyBtn">
               <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
               <span id="copyLabel">복사</span>
+            </button>
+            <button type="button" class="copy" id="cardEdit">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4"/></svg>
+              <span>수정</span>
             </button>
             <button type="button" class="copy del" id="cardDel">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
@@ -377,6 +410,7 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
   /* ---------- parsing ---------- */
   const UNTAGGED = '미분류';
   const ALL = '*';
+  const WEAK = '!weak';
   function parseLine(text) {
     const m = /^\s*\[([^\]\n]+)\]\s*([\s\S]*)$/.exec(text);
     const tag = (m ? m[1].trim() : '') || UNTAGGED;
@@ -402,6 +436,8 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     session: null,             // {key, label, queue: [id]}
     undo: [],
     listKey: null,
+    query: '',
+    cardEditing: false,
     editing: null,
     confirmDel: null,
   };
@@ -412,10 +448,27 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
       status: STATUSES.has(v.status) ? v.status : 'new',
       again: Number(v.again) || 0,
       created: Number(v.created) || 0,
+      doneAt: Number(v.doneAt) || 0,   // when it was last swiped to 완료
+      seen: Number(v.seen) || 0,       // when it was last swiped either way
       p: parseLine(String(v.text)),
     };
   }
-  const bodyOf = (c) => ({ text: c.text, status: c.status, again: c.again, created: c.created });
+  const bodyOf = (c) => ({ text: c.text, status: c.status, again: c.again, created: c.created, doneAt: c.doneAt || 0, seen: c.seen || 0 });
+
+  /* ---------- review schedule and weak cards ---------- */
+  const DAY = 86400000;
+  const REVIEW_DAYS = 7;      // a finished card comes back this many days later
+  const WEAK_MIN = 3;         // "다시" count that makes a card weak
+  const WEAK_SHARE = 0.1;     // weak deck holds at most this share of all cards
+  function dayStart(t) { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); }
+  function dueAt(c) { const d = new Date(dayStart(c.doneAt || c.created || 0)); d.setDate(d.getDate() + REVIEW_DAYS); return d.getTime(); }
+  const isDue = (c) => c.status === 'done' && Date.now() >= dueAt(c);
+  const isLeft = (c) => c.status !== 'done' || isDue(c);
+  function weakCards() {
+    const all = [...state.cards.values()];
+    const cap = Math.max(1, Math.ceil(all.length * WEAK_SHARE));
+    return all.filter((c) => c.again >= WEAK_MIN).sort((a, b) => b.again - a.again || b.seen - a.seen).slice(0, cap);
+  }
 
   /* ---------- storage ---------- */
   let col = null;
@@ -527,6 +580,7 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
   }
   function show(view) {
     state.view = view;
+    state.editing = null; state.confirmDel = null;
     for (const v of ['home', 'study', 'list', 'export']) $(v).hidden = v !== view;
     if (view === 'home') renderDecks();
   }
@@ -536,15 +590,17 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     const m = new Map();
     for (const c of state.cards.values()) {
       let s = m.get(c.p.key);
-      if (!s) { s = { key: c.p.key, label: c.p.tag, total: 0, fresh: 0, again: 0, done: 0 }; m.set(c.p.key, s); }
+      if (!s) { s = { key: c.p.key, label: c.p.tag, total: 0, fresh: 0, again: 0, due: 0, done: 0 }; m.set(c.p.key, s); }
       s.total++;
-      if (c.status === 'done') s.done++; else if (c.status === 'again') s.again++; else s.fresh++;
+      if (c.status === 'done') { if (isDue(c)) s.due++; else s.done++; } else if (c.status === 'again') s.again++; else s.fresh++;
     }
     return [...m.values()].sort((a, b) => a.label.localeCompare(b.label, 'ko'));
   }
   const inSection = (c, key) => key === ALL || c.p.key === key;
+  const poolOf = (key) => (key === WEAK ? weakCards() : [...state.cards.values()].filter((c) => inSection(c, key)));
   function sectionLabel(key) {
     if (key === ALL) return '전체';
+    if (key === WEAK) return '약한 카드';
     for (const c of state.cards.values()) if (c.p.key === key) return c.p.tag;
     return key;
   }
@@ -552,7 +608,7 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
   // Called after every data change. fromStore = the change came from the store, not from this view's own action.
   function refresh(fromStore) {
     updateAddPreview();
-    if (state.view === 'home') renderDecks();
+    if (state.view === 'home') { if (state.editing && !state.cards.has(state.editing)) state.editing = null; if (!state.editing) renderDecks(); }
     else if (state.view === 'export') renderExport();
     else if (state.view === 'list') { if (!state.editing || !state.cards.has(state.editing)) { state.editing = null; renderList(); } }
     else if (state.view === 'study') {
@@ -569,6 +625,19 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     ul.textContent = '';
     const secs = sections();
     $('exportOpen').hidden = !secs.length;
+    renderToday();
+    $('searchInput').hidden = !secs.length;
+    const searching = !!(state.query && secs.length);
+    $('searchRows').hidden = $('searchInfo').hidden = !searching;
+    ul.hidden = searching;
+    if (searching) {
+      empty.hidden = true;
+      const terms = state.query.split(/\s+/);
+      const hits = [...state.cards.values()].filter((c) => { const t = c.text.toLowerCase(); return terms.every((w) => t.includes(w)); }).sort((a, b) => b.created - a.created);
+      $('searchInfo').textContent = hits.length ? '검색 결과 ' + hits.length + '개' + (hits.length > 100 ? ' (처음 100개만 표시)' : '') : '맞는 카드가 없습니다.';
+      fillRows($('searchRows'), hits.slice(0, 100), true);
+      return;
+    }
     if (!secs.length) {
       empty.hidden = false; empty.textContent = '';
       if (!state.loaded) { empty.append(el('strong', '', '카드를 불러오는 중입니다')); }
@@ -582,9 +651,11 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     }
     empty.hidden = true;
     if (secs.length > 1) {
-      const t = secs.reduce((a, s) => ({ total: a.total + s.total, fresh: a.fresh + s.fresh, again: a.again + s.again, done: a.done + s.done }), { total: 0, fresh: 0, again: 0, done: 0 });
+      const t = secs.reduce((a, s) => ({ total: a.total + s.total, fresh: a.fresh + s.fresh, again: a.again + s.again, due: a.due + s.due, done: a.done + s.done }), { total: 0, fresh: 0, again: 0, due: 0, done: 0 });
       ul.append(deckRow(Object.assign({ key: ALL, label: '전체 섞기' }, t), true));
     }
+    const weak = weakCards();
+    if (weak.length) ul.append(weakRow(weak.length));
     for (const s of secs) ul.append(deckRow(s, false));
   }
   function deckRow(s, isAll) {
@@ -592,17 +663,41 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     const main = el('button', 'deck-main'); main.type = 'button'; main.dataset.study = s.key;
     const name = el('span', 'deck-name');
     if (isAll) name.append(el('strong', '', s.label)); else { const t = el('span', 'tag'); setTag(t, s.label, s.key); name.append(t); }
-    const left = el('span', 'deck-left', String(s.fresh + s.again)); left.append(el('small', '', '남음'));
+    const remain = s.fresh + s.again + s.due;
+    const left = el('span', 'deck-left', String(remain)); left.append(el('small', '', '남음'));
     const meta = el('span', 'deck-meta');
     meta.append(el('span', '', '전체 ' + s.total), el('span', '', '완료 ' + s.done));
+    if (s.due) meta.append(el('span', '', '복습 ' + s.due));
     if (s.again) meta.append(el('span', 'm-again', '다시 ' + s.again));
     const bar = el('span', 'bar'); const fill = el('i'); fill.style.width = (s.total ? Math.round((s.done / s.total) * 100) : 0) + '%'; bar.append(fill);
     main.append(name, left, meta, bar);
-    main.setAttribute('aria-label', s.label + ' 공부 시작, 남은 카드 ' + (s.fresh + s.again) + '개');
+    main.setAttribute('aria-label', s.label + ' 공부 시작, 남은 카드 ' + remain + '개');
     li.append(main);
     if (!isAll) { const b = el('button', 'btn deck-list', '목록'); b.type = 'button'; b.dataset.list = s.key; b.setAttribute('aria-label', s.label + ' 카드 목록'); li.append(b); }
     return li;
   }
+  function weakRow(n) {
+    const li = el('li', 'deck weak');
+    const main = el('button', 'deck-main'); main.type = 'button'; main.dataset.study = WEAK;
+    const name = el('span', 'deck-name'); name.append(el('strong', '', '약한 카드'));
+    const left = el('span', 'deck-left', String(n)); left.append(el('small', '', '장'));
+    const meta = el('span', 'deck-meta');
+    meta.append(el('span', '', '누적 ' + WEAK_MIN + '회 이상'), el('span', '', '횟수 많은 순으로 전체의 ' + Math.round(WEAK_SHARE * 100) + '%까지'));
+    main.append(name, left, meta);
+    main.setAttribute('aria-label', '약한 카드 ' + n + '장 공부 시작');
+    li.append(main);
+    return li;
+  }
+  function renderToday() {
+    const box = $('today'); box.textContent = '';
+    box.hidden = !state.cards.size;
+    if (box.hidden) return;
+    const t0 = dayStart(Date.now());
+    let seen = 0, done = 0;
+    for (const c of state.cards.values()) { if (c.seen >= t0) seen++; if (c.status === 'done' && c.doneAt >= t0) done++; }
+    box.append('오늘 본 카드 ', el('b', '', seen + '장'), ' · 완료 ', el('b', '', done + '장'));
+  }
+  $('searchInput').addEventListener('input', () => { state.query = $('searchInput').value.trim().toLowerCase(); state.editing = null; state.confirmDel = null; renderDecks(); });
   $('decks').addEventListener('click', (e) => {
     const s = e.target.closest('[data-study]'); if (s) return startSession(s.dataset.study);
     const l = e.target.closest('[data-list]'); if (l) { state.listKey = l.dataset.list; state.editing = null; show('list'); renderList(); }
@@ -654,7 +749,7 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     saving = true;
     const btn = $('addSave'); btn.disabled = true; btn.textContent = '저장 중…';
     const now = Date.now();
-    const cards = fresh.map((f, i) => ({ id: newId(), text: f.text, status: 'new', again: 0, created: now + i, p: f.p }));
+    const cards = fresh.map((f, i) => ({ id: newId(), text: f.text, status: 'new', again: 0, created: now + i, doneAt: 0, seen: 0, p: f.p }));
     const results = await Promise.allSettled(cards.map((c) => persistNew(c)));
     const failed = cards.filter((_, i) => results[i].status === 'rejected');
     saving = false;
@@ -673,7 +768,8 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
   const card = $('card'), stage = $('stage');
   let busy = false;
   function startSession(key) {
-    const ids = [...state.cards.values()].filter((c) => inSection(c, key) && c.status !== 'done').map((c) => c.id);
+    const pool = poolOf(key);
+    const ids = (key === WEAK ? pool : pool.filter(isLeft)).map((c) => c.id);
     state.session = { key, label: sectionLabel(key), queue: shuffle(ids) };
     state.undo = [];
     show('study');
@@ -681,7 +777,7 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
   }
   function renderStudyMeta() {
     const s = state.session;
-    if (s.key === ALL) { $('studyTag').textContent = '전체'; $('studyTag').style.setProperty('--h', 260); } else setTag($('studyTag'), s.label, s.key);
+    if (s.key === ALL || s.key === WEAK) { $('studyTag').textContent = s.label; $('studyTag').style.setProperty('--h', 260); } else setTag($('studyTag'), s.label, s.key);
     $('studyRemain').textContent = s.queue.length ? '남은 카드 ' + s.queue.length + '개' : '';
     $('btnUndo').disabled = !state.undo.length;
     $('ghost').hidden = s.queue.length < 2;
@@ -692,17 +788,26 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     renderStudyMeta();
     const c = state.cards.get(s.queue[0]);
     const finished = !c;
+    state.cardEditing = false;
     card.hidden = finished; $('finish').hidden = !finished;
     $('btnDone').disabled = $('btnAgain').disabled = finished;
     if (finished) {
-      const all = [...state.cards.values()].filter((x) => inSection(x, s.key));
+      const all = poolOf(s.key);
+      if (s.key === WEAK) {
+        $('finishTitle').textContent = '약한 카드를 다 봤습니다';
+        $('finishText').textContent = all.length ? '누적 ' + WEAK_MIN + '회 이상인 카드 ' + all.length + '장을 모두 넘겼습니다.' : '누적 ' + WEAK_MIN + '회 이상인 카드가 없습니다.';
+        $('finishReset').hidden = true;
+        return;
+      }
       $('finishTitle').textContent = all.length ? '이 섹션을 다 봤습니다' : '이 섹션에 카드가 없습니다';
-      $('finishText').textContent = all.length ? '카드 ' + all.length + '개가 모두 완료 상태입니다. 다시 돌리고 싶으면 완료한 카드를 되돌리세요.' : '섹션 목록으로 돌아가 카드를 추가해 주세요.';
+      $('finishText').textContent = all.length ? '카드 ' + all.length + '개가 모두 완료 상태입니다. 완료한 카드는 ' + REVIEW_DAYS + '일 뒤 자동으로 다시 나옵니다. 지금 다시 돌리려면 아래 버튼을 누르세요.' : '섹션 목록으로 돌아가 카드를 추가해 주세요.';
       $('finishReset').hidden = !all.length;
       return;
     }
+    paintEdit();
     setTag($('cardTag'), c.p.tag, c.p.key);
-    const ab = $('cardAgain'); ab.hidden = !c.again; ab.textContent = '누적 ' + c.again + '회';
+    const marks = []; if (isDue(c)) marks.push(REVIEW_DAYS + '일 복습'); if (c.again) marks.push('누적 ' + c.again + '회');
+    const ab = $('cardAgain'); ab.hidden = !marks.length; ab.textContent = marks.join(' · ');
     disarmDelete();
     $('cardTitle').textContent = c.p.title;
     $('cardBody').textContent = c.p.body;
@@ -720,18 +825,20 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
   function decide(kind) {
     const s = state.session; const id = s.queue[0]; const c = state.cards.get(id);
     if (!c) return;
-    state.undo.push({ id, status: c.status, again: c.again });
+    const now = Date.now();
+    state.undo.push({ id, status: c.status, again: c.again, doneAt: c.doneAt, seen: c.seen });
     s.queue.shift();
-    if (kind === 'done') { c.status = 'done'; persistPatch(c, { status: 'done' }); }
+    c.seen = now;
+    if (kind === 'done') { c.status = 'done'; c.doneAt = now; persistPatch(c, { status: 'done', doneAt: now, seen: now }); }
     else {
-      c.status = 'again'; c.again += 1; persistPatch(c, { status: 'again', again: c.again });
+      c.status = 'again'; c.again += 1; persistPatch(c, { status: 'again', again: c.again, seen: now });
       // comes back a few cards later, not straight away
       s.queue.splice(Math.min(s.queue.length, 3 + Math.floor(Math.random() * 3)), 0, id);
     }
     renderStudy();
   }
   function fly(kind) {
-    if (busy || card.hidden) return;
+    if (busy || card.hidden || state.cardEditing) return;
     busy = true;
     const dir = kind === 'done' ? -1 : 1;
     const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -749,8 +856,8 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     if (!c) { renderStudyMeta(); return; }
     const i = s.queue.indexOf(u.id); if (i >= 0) s.queue.splice(i, 1);
     s.queue.unshift(u.id);
-    c.status = u.status; c.again = u.again;
-    persistPatch(c, { status: u.status, again: u.again });
+    c.status = u.status; c.again = u.again; c.doneAt = u.doneAt; c.seen = u.seen;
+    persistPatch(c, { status: u.status, again: u.again, doneAt: u.doneAt, seen: u.seen });
     renderStudy();
   }
   async function resetSection(key) {
@@ -774,7 +881,7 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     $('stampDone').style.opacity = $('stampAgain').style.opacity = 0;
   }
   card.addEventListener('pointerdown', (e) => {
-    if (busy || e.button > 0 || e.target.closest('button')) return;
+    if (busy || state.cardEditing || e.button > 0 || e.target.closest('button')) return;
     drag = { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, dy: 0, on: false, lx: e.clientX, lt: performance.now(), v: 0 };
   });
   card.addEventListener('pointermove', (e) => {
@@ -823,6 +930,34 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     refresh(false);
   });
 
+  // fix a card without leaving the study screen
+  function paintEdit() {
+    const on = state.cardEditing;
+    $('cardEditBox').hidden = !on;
+    $('cardTitle').hidden = on; $('cardTools').hidden = on;
+    if (on) $('cardBody').hidden = true; else paintReveal();
+    const c = state.session && state.cards.get(state.session.queue[0]);
+    $('btnDone').disabled = $('btnAgain').disabled = on || !c;
+  }
+  function openEdit() {
+    const c = state.cards.get(state.session.queue[0]);
+    if (!c || busy || state.cardEditing) return;
+    state.cardEditing = true;
+    $('cardEditText').value = c.text;
+    paintEdit();
+    $('cardEditText').focus();
+  }
+  $('cardEdit').addEventListener('click', openEdit);
+  $('cardEditCancel').addEventListener('click', () => { state.cardEditing = false; paintEdit(); });
+  $('cardEditSave').addEventListener('click', () => {
+    const c = state.cards.get(state.session.queue[0]);
+    if (!c) return;
+    const text = $('cardEditText').value.replace(/\s*\r?\n\s*/g, ' ').trim();
+    if (!text) { toast('내용이 비어 있습니다.'); return; }
+    if (text !== c.text) { c.text = text; c.p = parseLine(text); persistPatch(c, { text }); toast('카드를 고쳤습니다.'); }
+    renderStudy();
+  });
+
   async function copyText(text) {
     try { await navigator.clipboard.writeText(text); return true; } catch (e) {
       try {
@@ -856,18 +991,23 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     else if (e.key === 'ArrowRight') { e.preventDefault(); fly('again'); }
     else if (e.key === 'c' || e.key === 'C') copyCurrent();
     else if (e.key === 'z' || e.key === 'Z') undo();
+    else if (e.key === 'e' || e.key === 'E') { e.preventDefault(); openEdit(); }
     else if (e.key === 'Escape') show('home');
   });
 
   /* ---------- list ---------- */
   const ST_LABEL = { new: '새 카드', again: '다시', done: '완료' };
-  function renderList() {
-    const key = state.listKey;
-    const items = [...state.cards.values()].filter((c) => c.p.key === key).sort((a, b) => b.created - a.created);
-    if (!items.length) { show('home'); return; }
-    setTag($('listTag'), items[items.length - 1].p.tag, key);
-    $('listCount').textContent = '카드 ' + items.length + '개';
-    const ul = $('rows'); ul.textContent = '';
+  function statusOf(c) {
+    let cls = 'st st-' + c.status, text = ST_LABEL[c.status];
+    if (c.status === 'done') {
+      if (isDue(c)) { cls = 'st st-due'; text = '복습할 차례'; }
+      else text = '완료 · ' + Math.max(1, Math.round((dueAt(c) - dayStart(Date.now())) / DAY)) + '일 뒤 복습';
+    }
+    if (c.again) text += ' · 누적 ' + c.again + '회';
+    return el('span', cls, text);
+  }
+  function fillRows(ul, items, showTag) {
+    ul.textContent = '';
     for (const c of items) {
       const li = el('li', 'row'); li.dataset.id = c.id;
       const foot = el('div', 'row-foot');
@@ -878,7 +1018,8 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
         foot.append(save, cancel);
         li.append(ta, foot);
       } else {
-        foot.append(el('span', 'st st-' + c.status, ST_LABEL[c.status] + (c.again ? ' · ' + c.again + '회' : '')), el('span', 'sp'));
+        if (showTag) { const t = el('span', 'tag'); setTag(t, c.p.tag, c.p.key); foot.append(t); }
+        foot.append(statusOf(c), el('span', 'sp'));
         if (c.status !== 'new') { const r = el('button', 'btn', '다시 공부'); r.dataset.act = 'renew'; foot.append(r); }
         const ed = el('button', 'btn', '수정'); ed.dataset.act = 'edit';
         const del = el('button', 'btn' + (state.confirmDel === c.id ? ' danger' : ''), state.confirmDel === c.id ? '정말 삭제' : '삭제'); del.dataset.act = 'delete';
@@ -889,13 +1030,22 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
       ul.append(li);
     }
   }
+  function renderList() {
+    const key = state.listKey;
+    const items = [...state.cards.values()].filter((c) => c.p.key === key).sort((a, b) => b.created - a.created);
+    if (!items.length) { show('home'); return; }
+    setTag($('listTag'), items[items.length - 1].p.tag, key);
+    $('listCount').textContent = '카드 ' + items.length + '개';
+    fillRows($('rows'), items, false);
+  }
+  function rerenderRows() { if (state.view === 'list') renderList(); else if (state.view === 'home') renderDecks(); }
   let delTimer = null;
-  $('rows').addEventListener('click', (e) => {
+  function onRowAction(e) {
     const b = e.target.closest('button[data-act]'); if (!b) return;
     const li = b.closest('.row'); const c = state.cards.get(li.dataset.id); if (!c) return;
     const act = b.dataset.act;
-    if (act === 'edit') { state.editing = c.id; state.confirmDel = null; renderList(); const ta = $('edit-' + c.id); if (ta) ta.focus(); }
-    else if (act === 'cancel') { state.editing = null; renderList(); }
+    if (act === 'edit') { state.editing = c.id; state.confirmDel = null; rerenderRows(); const ta = $('edit-' + c.id); if (ta) ta.focus(); }
+    else if (act === 'cancel') { state.editing = null; rerenderRows(); }
     else if (act === 'save') {
       const text = li.querySelector('textarea').value.replace(/\s*\r?\n\s*/g, ' ').trim();
       if (!text) { toast('내용이 비어 있습니다.'); return; }
@@ -906,9 +1056,11 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     else if (act === 'renew') { c.status = 'new'; c.again = 0; persistPatch(c, { status: 'new', again: 0 }); refresh(false); }
     else if (act === 'delete') {
       if (state.confirmDel === c.id) { clearTimeout(delTimer); state.confirmDel = null; persistDelete(c.id); toast('카드를 삭제했습니다.'); refresh(false); }
-      else { state.confirmDel = c.id; renderList(); clearTimeout(delTimer); delTimer = setTimeout(() => { state.confirmDel = null; if (state.view === 'list' && !state.editing) renderList(); }, 3000); }
+      else { state.confirmDel = c.id; rerenderRows(); clearTimeout(delTimer); delTimer = setTimeout(() => { state.confirmDel = null; if (!state.editing) rerenderRows(); }, 3000); }
     }
-  });
+  }
+  $('rows').addEventListener('click', onRowAction);
+  $('searchRows').addEventListener('click', onRowAction);
   $('listBack').addEventListener('click', () => show('home'));
   $('listReset').addEventListener('click', async () => {
     const n = await resetSection(state.listKey);
