@@ -1,3 +1,34 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>스와이프 암기장</title>
+<meta name="theme-color" content="#f1f0f6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131119" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="암기장">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>:root{color-scheme:light;padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px)}</style>
+<script src="vendor/firebase-app-compat.js"></script>
+<script src="vendor/firebase-auth-compat.js"></script>
+<script src="vendor/firebase-firestore-compat.js"></script>
+<script>
+window.SC_FIREBASE_CONFIG = {
+  "apiKey": "AIzaSyAfgFLi09nUFYIx-ZjrIx6RpFu_JBW7Lyk",
+  "authDomain": "swipe-anki.firebaseapp.com",
+  "projectId": "swipe-anki",
+  "storageBucket": "swipe-anki.firebasestorage.app",
+  "messagingSenderId": "394041819232",
+  "appId": "1:394041819232:web:3c2fd2a60ee92e47650305"
+};
+if ('serviceWorker' in navigator) addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
+</script>
+</head>
+<body>
 <title>스와이프 암기장</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
@@ -84,6 +115,10 @@ button { cursor: pointer; }
   border: 1px solid var(--again); background: var(--again-soft); color: var(--ink);
   border-radius: 10px; padding: 10px 12px; font-size: 13px;
 }
+
+.top-right { display: flex; align-items: center; gap: 4px; }
+.top-right .btn { min-height: 32px; padding: 2px 8px; font-size: 12px; }
+.login { display: grid; place-items: center; }
 
 /* ---------- shared pieces ---------- */
 .view { flex: 1; min-height: 0; }
@@ -278,7 +313,10 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
 <div class="app">
   <header class="top">
     <div class="brand"><span class="brand-mark" aria-hidden="true">[ ]</span><span>스와이프 암기장</span></div>
-    <div class="sync" id="sync" data-state="connecting"><span class="dot"></span><span id="syncText">연결 중</span></div>
+    <div class="top-right">
+      <button type="button" class="btn quiet" id="signOut" hidden>로그아웃</button>
+      <div class="sync" id="sync" data-state="connecting"><span class="dot"></span><span id="syncText">연결 중</span></div>
+    </div>
   </header>
   <div class="notice" id="notice" role="status" hidden></div>
 
@@ -380,6 +418,16 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     <ul class="rows" id="rows"></ul>
   </main>
 
+  <!-- LOGIN (standalone app only) -->
+  <main class="view login" id="login" hidden>
+    <div class="finish">
+      <h3>로그인하면 카드가 동기화됩니다</h3>
+      <p>컴퓨터와 휴대폰에서 같은 구글 계정으로 로그인하세요. 카드는 그 계정에만 저장됩니다.</p>
+      <button type="button" class="btn primary" id="signIn">Google 계정으로 로그인</button>
+      <p class="hint" id="loginMsg" role="status"></p>
+    </div>
+  </main>
+
   <!-- EXPORT -->
   <main class="view export" id="export" hidden>
     <div class="bar-top">
@@ -473,6 +521,8 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
   /* ---------- storage ---------- */
   let col = null;
   let loadTimer = null;
+  let direct = false;          // true when the store is Firestore, which queues and retries writes itself (offline too)
+  let everSynced = false;
   const chains = new Map();
   let active = 0;
   const waiters = [];
@@ -486,6 +536,7 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
   }
   // One write at a time per card, at most four in flight overall.
   function enqueue(id, fn) {
+    if (direct) { try { fn().catch(onWriteError); } catch (e) { onWriteError(e); } return Promise.resolve(); }
     const run = async () => { await slot(); try { await withRetry(fn); } finally { release(); } };
     const p = (chains.get(id) || Promise.resolve()).then(run);
     chains.set(id, p.catch(onWriteError));
@@ -523,9 +574,10 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     state.loaded = true;
     if (!snap.metadata || !snap.metadata.fromCache) {
       clearTimeout(loadTimer);
+      everSynced = true;
       setSync('cloud', '동기화됨');
       setNotice('');
-    }
+    } else if (direct && everSynced) setSync('connecting', '오프라인');
     refresh(true);
   }
   function onSnapError() {
@@ -557,7 +609,65 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     setNotice('동기화에 연결하지 못했습니다. 지금 추가하는 카드는 이 기기에만 저장되고, 다음에 연결되면 자동으로 올라갑니다.');
     refresh(true);
   }
+  /* ---------- standalone app: Firebase sign-in + Firestore ---------- */
+  let fbAuth = null, unsub = null;
+  function startFirebase(cfg) {
+    let fs;
+    try {
+      window.firebase.initializeApp(cfg);
+      fbAuth = window.firebase.auth();
+      fs = window.firebase.firestore();
+      fs.enablePersistence({ synchronizeTabs: true }).catch(() => { /* works online without the offline cache */ });
+    } catch (e) { fbAuth = null; startLocal(); return; }
+    direct = true;
+    setSync('connecting', '로그인 확인 중');
+    fbAuth.onAuthStateChanged((user) => {
+      if (unsub) { unsub(); unsub = null; }
+      clearTimeout(loadTimer);
+      everSynced = false;
+      $('signOut').hidden = !user;
+      if (!user) {
+        col = null; state.mode = 'connecting'; state.cards = new Map(); state.loaded = false;
+        setSync('connecting', '로그인 필요'); setNotice('');
+        show('login');
+        return;
+      }
+      col = fs.collection('users').doc(user.uid).collection('cards');
+      state.mode = 'cloud';
+      setSync('connecting', '동기화 확인 중');
+      loadTimer = setTimeout(() => setNotice('오프라인 상태입니다. 바꾼 내용은 이 기기에 보관했다가 연결되면 자동으로 올립니다.'), 10000);
+      unsub = col.onSnapshot({ includeMetadataChanges: true }, onSnap, onSnapError);
+      show('home');
+      updateAddPreview();
+      uploadLocal();
+    });
+  }
+  $('signIn').addEventListener('click', async () => {
+    if (!fbAuth) return;
+    const msg = $('loginMsg'); msg.textContent = '';
+    const provider = new window.firebase.auth.GoogleAuthProvider();
+    try { await fbAuth.signInWithPopup(provider); } catch (e) {
+      const code = (e && e.code) || '';
+      if (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment') {
+        try { await fbAuth.signInWithRedirect(provider); } catch (e2) { msg.textContent = '로그인 창을 열지 못했습니다. 브라우저의 팝업 차단을 풀고 다시 눌러 주세요.'; }
+      }
+      else if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') { /* closed on purpose */ }
+      else if (code === 'auth/unauthorized-domain') msg.textContent = '이 주소가 Firebase의 승인된 도메인에 없습니다. Authentication 설정에서 도메인을 추가해 주세요.';
+      else if (code === 'auth/network-request-failed') msg.textContent = '인터넷 연결을 확인하고 다시 눌러 주세요.';
+      else msg.textContent = '로그인하지 못했습니다. (' + (code || '알 수 없는 오류') + ')';
+    }
+  });
+  let outTimer = null;
+  $('signOut').addEventListener('click', () => {
+    const b = $('signOut');
+    if (b.dataset.armed) { clearTimeout(outTimer); delete b.dataset.armed; b.textContent = '로그아웃'; if (fbAuth) fbAuth.signOut(); return; }
+    b.dataset.armed = '1'; b.textContent = '정말 로그아웃';
+    outTimer = setTimeout(() => { delete b.dataset.armed; b.textContent = '로그아웃'; }, 3000);
+  });
+
   async function init() {
+    const inClaude = !!(window.claude && typeof window.claude.use === 'function');
+    if (!inClaude && window.firebase && window.SC_FIREBASE_CONFIG) { startFirebase(window.SC_FIREBASE_CONFIG); return; }
     let db = null;
     try { db = window.claude && typeof window.claude.use === 'function' ? await window.claude.use('db') : null; } catch (e) { db = null; }
     if (!db) { startLocal(); return; }
@@ -581,7 +691,7 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
   function show(view) {
     state.view = view;
     state.editing = null; state.confirmDel = null;
-    for (const v of ['home', 'study', 'list', 'export']) $(v).hidden = v !== view;
+    for (const v of ['home', 'study', 'list', 'export', 'login']) $(v).hidden = v !== view;
     if (view === 'home') renderDecks();
   }
   function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
@@ -1081,7 +1191,7 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
   let downloads = null;
   (async () => {
     try { downloads = window.claude && typeof window.claude.use === 'function' ? await window.claude.use('downloads') : null; } catch (e) { downloads = null; }
-    $('exportSave').hidden = !downloads;
+    $('exportSave').hidden = !downloads && !!window.claude;   // outside Claude the browser can save the file itself
   })();
   $('exportOpen').addEventListener('click', () => { show('export'); renderExport(); $('exportText').scrollTop = 0; });
   $('exportBack').addEventListener('click', () => show('home'));
@@ -1091,9 +1201,17 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     else { $('exportText').focus(); $('exportText').select(); toast('자동 복사가 막혀 있습니다. 선택된 텍스트를 직접 복사해 주세요.'); }
   });
   $('exportSave').addEventListener('click', async () => {
-    if (!downloads) return;
     const d = new Date();
     const stamp = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    if (!downloads) {
+      if (window.claude) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([$('exportText').value], { type: 'text/plain;charset=utf-8' }));
+      a.download = 'swipe-cards-' + stamp + '.txt';
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      return;
+    }
     try {
       await downloads.save({ filename: 'swipe-cards-' + stamp + '.txt', data: $('exportText').value });
       toast('파일로 저장했습니다.');
@@ -1110,3 +1228,5 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
   init();
 })();
 </script>
+</body>
+</html>
