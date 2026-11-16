@@ -177,8 +177,10 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
 .card.ghost { box-shadow: none; transform: translateY(10px) scale(.95); opacity: .6; }
 .card.enter { animation: enter .18s ease-out; }
 @keyframes enter { from { transform: translateY(8px) scale(.97); opacity: .4; } to { transform: none; opacity: 1; } }
-.card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.again-badge { font-size: 12px; font-weight: 600; color: var(--again); background: var(--again-soft); padding: 2px 8px; border-radius: 999px; }
+.card, .card * { touch-action: pan-y; }  /* the scrolling body is its own touch target, so it needs this too */
+.card-head { display: flex; align-items: center; gap: 8px; }
+.again-badge { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--again); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.card-tools { display: flex; gap: 8px; flex-wrap: wrap; }
 .card-scroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
 .card-title { margin: 0; font-size: 24px; font-weight: 700; line-height: 1.3; letter-spacing: -.015em; text-wrap: balance; overflow-wrap: anywhere; }
 .card-body { margin: 0; font-size: 17px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; border-top: 1px solid var(--line); padding-top: 14px; width: 100%; }
@@ -190,13 +192,15 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
 .copy:hover { border-color: var(--accent); color: var(--accent); }
 .copy svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .copy.ok { border-color: var(--done); color: var(--done); }
+.copy.del { color: var(--muted); }
+.copy.del:hover, .copy.del.danger { border-color: var(--again); color: var(--again); }
 .stamp {
   position: absolute; top: 16px; font-weight: 700; font-size: 15px; letter-spacing: .04em;
   padding: 4px 12px; border-radius: 8px; border: 2px solid currentColor; opacity: 0; pointer-events: none;
   background: var(--surface);
 }
-.stamp-done { right: 16px; color: var(--done); transform: rotate(8deg); }
-.stamp-again { left: 16px; color: var(--again); transform: rotate(-8deg); }
+.stamp-done { right: 16px; color: var(--done); }
+.stamp-again { left: 16px; color: var(--again); }
 
 .actions { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; max-width: 560px; width: 100%; margin: 0 auto; }
 .act { border: 0; border-radius: 14px; padding: 12px 10px; font-weight: 700; font-size: 16px; min-height: 54px; display: flex; flex-direction: column; align-items: center; line-height: 1.2; }
@@ -305,10 +309,16 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
           <h3 class="card-title" id="cardTitle"></h3>
           <p class="card-body" id="cardBody"></p>
           
-          <button type="button" class="copy" id="copyBtn">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
-            <span id="copyLabel">복사</span>
-          </button>
+          <div class="card-tools">
+            <button type="button" class="copy" id="copyBtn">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
+              <span id="copyLabel">복사</span>
+            </button>
+            <button type="button" class="copy del" id="cardDel">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+              <span id="cardDelLabel">삭제</span>
+            </button>
+          </div>
         </div>
       </article>
       <div class="finish" id="finish" hidden>
@@ -692,7 +702,8 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
       return;
     }
     setTag($('cardTag'), c.p.tag, c.p.key);
-    const ab = $('cardAgain'); ab.hidden = !c.again; ab.textContent = '다시 ' + c.again + '회';
+    const ab = $('cardAgain'); ab.hidden = !c.again; ab.textContent = '누적 ' + c.again + '회';
+    disarmDelete();
     $('cardTitle').textContent = c.p.title;
     $('cardBody').textContent = c.p.body;
     paintReveal();
@@ -726,10 +737,10 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     $(kind === 'done' ? 'stampDone' : 'stampAgain').style.opacity = 1;
     card.classList.remove('enter');
-    card.style.transition = reduce ? 'opacity .12s' : 'transform .2s ease-in, opacity .2s ease-in';
-    card.style.transform = reduce ? '' : 'translateX(' + dir * 130 + '%) rotate(' + dir * 16 + 'deg)';
+    card.style.transition = reduce ? 'opacity .12s' : 'transform .16s ease-out, opacity .16s ease-out';
+    card.style.transform = reduce ? '' : 'translate3d(' + dir * (stage.clientWidth + 40) + 'px, 0, 0)';
     card.style.opacity = '0';
-    setTimeout(() => { busy = false; decide(kind); }, reduce ? 120 : 200);
+    setTimeout(() => { busy = false; decide(kind); }, reduce ? 120 : 160);
   }
   function undo() {
     const u = state.undo.pop(); const s = state.session;
@@ -749,27 +760,30 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     return done.length;
   }
 
-  // swipe: left = 완료, right = 다시
+  // swipe: left = 완료, right = 다시. The card only slides sideways, level with the finger.
   let drag = null;
+  const swipeDist = () => Math.min(64, stage.clientWidth * 0.16);
   function paintDrag(dx) {
-    card.style.transform = 'translateX(' + dx + 'px) rotate(' + dx / 22 + 'deg)';
-    const th = Math.min(120, stage.clientWidth * 0.25);
+    card.style.transform = 'translate3d(' + dx + 'px, 0, 0)';
+    const th = swipeDist();
     $('stampDone').style.opacity = Math.max(0, Math.min(1, -dx / th));
     $('stampAgain').style.opacity = Math.max(0, Math.min(1, dx / th));
   }
   function settle() {
-    card.style.transition = 'transform .18s ease-out'; card.style.transform = '';
+    card.style.transition = 'transform .15s ease-out'; card.style.transform = '';
     $('stampDone').style.opacity = $('stampAgain').style.opacity = 0;
   }
   card.addEventListener('pointerdown', (e) => {
     if (busy || e.button > 0 || e.target.closest('button')) return;
-    drag = { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, dy: 0, on: false, t: performance.now() };
+    drag = { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, dy: 0, on: false, lx: e.clientX, lt: performance.now(), v: 0 };
   });
   card.addEventListener('pointermove', (e) => {
     if (!drag || e.pointerId !== drag.id) return;
+    const now = performance.now();
+    if (now > drag.lt) { drag.v = 0.6 * ((e.clientX - drag.lx) / (now - drag.lt)) + 0.4 * drag.v; drag.lx = e.clientX; drag.lt = now; }
     drag.dx = e.clientX - drag.x; drag.dy = e.clientY - drag.y;
     if (!drag.on) {
-      if (Math.abs(drag.dx) > 10 && Math.abs(drag.dx) > Math.abs(drag.dy) * 1.2) {
+      if (Math.abs(drag.dx) > 4 && Math.abs(drag.dx) >= Math.abs(drag.dy)) {
         drag.on = true;
         try { card.setPointerCapture(e.pointerId); } catch (err) { /* capture is optional */ }
         card.classList.remove('enter'); card.style.transition = 'none';
@@ -781,13 +795,33 @@ code { font-family: var(--font-mono); font-size: .92em; background: var(--sunken
     if (!drag || e.pointerId !== drag.id) return;
     const d = drag; drag = null;
     if (!d.on) return;
-    const th = Math.min(120, stage.clientWidth * 0.25);
-    const v = d.dx / Math.max(1, performance.now() - d.t);
-    if (d.dx <= -th || (v < -0.6 && d.dx < -40)) fly('done');
-    else if (d.dx >= th || (v > 0.6 && d.dx > 40)) fly('again');
+    const th = swipeDist();
+    const v = performance.now() - d.lt < 80 ? d.v : 0;   // a pause before letting go is not a flick
+    if (d.dx <= -th || (v < -0.3 && d.dx < -16)) fly('done');
+    else if (d.dx >= th || (v > 0.3 && d.dx > 16)) fly('again');
     else settle();
   });
   card.addEventListener('pointercancel', () => { if (drag && drag.on) settle(); drag = null; });
+
+  // delete from the card itself: first press arms, second press within 3 s deletes
+  let cardDelTimer = null;
+  function disarmDelete() {
+    clearTimeout(cardDelTimer);
+    $('cardDel').classList.remove('danger'); $('cardDelLabel').textContent = '삭제';
+  }
+  $('cardDel').addEventListener('click', () => {
+    const id = state.session.queue[0];
+    if (!state.cards.has(id)) return;
+    if (!$('cardDel').classList.contains('danger')) {
+      $('cardDel').classList.add('danger'); $('cardDelLabel').textContent = '정말 삭제';
+      clearTimeout(cardDelTimer); cardDelTimer = setTimeout(disarmDelete, 3000);
+      return;
+    }
+    state.undo = state.undo.filter((u) => u.id !== id);
+    persistDelete(id);
+    toast('카드를 삭제했습니다.');
+    refresh(false);
+  });
 
   async function copyText(text) {
     try { await navigator.clipboard.writeText(text); return true; } catch (e) {
